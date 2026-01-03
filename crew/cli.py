@@ -35,7 +35,7 @@ from crew.display import (
 )
 from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks, shutdown_agent
 from crew.crew_logging import read_log_tail
-from crew.git import get_worktree_list
+from crew.git import get_worktree_list, has_uncommitted_changes, remove_worktree
 
 console = Console()
 
@@ -1416,24 +1416,59 @@ def recover_session(state, project_root: Path) -> bool:
                 console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim]({old_status})[/dim]")
                 actions_taken.append(f"Reset {agent.name} to idle (worktree missing)")
             else:
-                # Worktree exists - reconcile mid-step agent
+                # Worktree exists - check if it has uncommitted changes
+                worktree_path = Path(agent.worktree)
                 console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim]({agent.status})[/dim]")
-                # Use shutdown_agent to reconcile state based on logs
-                work_status = shutdown_agent(agent, state, project_root)
-                if work_status == "done":
-                    # Agent completed their task - run complete_task to merge, close ticket, return to idle
-                    task_id = agent.task
-                    branch = agent.branch
-                    try:
-                        complete_task(agent, state, project_root)
-                        actions_taken.append(f"Completed {agent.name} (merged {branch}, closed {task_id})")
-                    except Exception as e:
-                        actions_taken.append(f"Failed to complete {agent.name}: {e}")
-                        # Leave agent as done so user can manually handle
-                elif work_status == "partial":
-                    actions_taken.append(f"Agent {agent.name} has partial work (can resume)")
-                elif work_status == "nothing":
-                    actions_taken.append(f"Reset {agent.name} to ready (no work done)")
+
+                if has_uncommitted_changes(worktree_path):
+                    # Dirty worktree - simpler recovery: remove worktree and reset to idle
+                    # The ticket stays open and can be re-assigned
+                    old_task = agent.task
+                    remove_worktree(worktree_path)
+                    agent.status = "idle"
+                    agent.worktree = None
+                    agent.branch = ""
+                    agent.task = None
+                    agent.session = ""
+                    agent.step_count = 0
+                    agent.last_step_at = None
+                    actions_taken.append(f"Reset {agent.name} to idle (dirty worktree removed, ticket {old_task} stays open)")
+                else:
+                    # Clean worktree - reconcile based on logs
+                    work_status = shutdown_agent(agent, state, project_root)
+                    if work_status == "done":
+                        # Agent completed their task - run complete_task to merge, close ticket, return to idle
+                        task_id = agent.task
+                        branch = agent.branch
+                        try:
+                            complete_task(agent, state, project_root)
+                            actions_taken.append(f"Completed {agent.name} (merged {branch}, closed {task_id})")
+                        except Exception as e:
+                            actions_taken.append(f"Failed to complete {agent.name}: {e}")
+                            # Leave agent as done so user can manually handle
+                    elif work_status == "partial":
+                        # Partial work but clean worktree - reset to idle, don't try to recover
+                        # The committed work stays on the branch but agent is reset
+                        agent.status = "idle"
+                        agent.worktree = None
+                        agent.branch = ""
+                        agent.task = None
+                        agent.session = ""
+                        agent.step_count = 0
+                        agent.last_step_at = None
+                        remove_worktree(worktree_path)
+                        actions_taken.append(f"Reset {agent.name} to idle (partial work, ticket stays open)")
+                    elif work_status == "nothing":
+                        # No work done - reset to idle (simpler: don't try to keep as "ready")
+                        agent.status = "idle"
+                        agent.worktree = None
+                        agent.branch = ""
+                        agent.task = None
+                        agent.session = ""
+                        agent.step_count = 0
+                        agent.last_step_at = None
+                        remove_worktree(worktree_path)
+                        actions_taken.append(f"Reset {agent.name} to idle (no work done, ticket stays open)")
         elif agent.status == "idle":
             # Idle agents are fine, just display
             console.print(f"  {status_icon} [bold]{agent.name}[/bold] [dim](idle)[/dim]")

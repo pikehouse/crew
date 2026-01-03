@@ -1,6 +1,6 @@
 ---
 id: c-db42
-status: open
+status: closed
 deps: [c-0a1f, c-9011]
 created: 2026-01-03T18:33:28Z
 type: task
