@@ -1,0 +1,18 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "cost_usd": 0.004521,
+  "is_error": false,
+  "duration_ms": 3245,
+  "duration_api_ms": 2891,
+  "num_turns": 1,
+  "result": "I've read CLAUDE.md and understand the task.\n\nStarting to work on the implementation. Let me first explore the codebase structure and understand the existing patterns.\n\nI'll proceed with the following steps:\n1. Analyze the requirements\n2. Implement the solution\n3. Test the changes",
+  "session_id": "test-session",
+  "usage": {
+    "input_tokens": 1024,
+    "output_tokens": 384,
+    "cache_creation_input_tokens": 512,
+    "cache_read_input_tokens": 0
+  },
+  "total_cost_usd": 0.004521
+}

@@ -1,0 +1,18 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "cost_usd": 0.006234,
+  "is_error": false,
+  "duration_ms": 4521,
+  "duration_api_ms": 3987,
+  "num_turns": 2,
+  "result": "Continuing work on the task...\n\nI've implemented the core functionality and am now writing tests. The changes look good so far.\n\nCommitting the initial implementation.",
+  "session_id": "test-session",
+  "usage": {
+    "input_tokens": 1536,
+    "output_tokens": 512,
+    "cache_creation_input_tokens": 256,
+    "cache_read_input_tokens": 512
+  },
+  "total_cost_usd": 0.010755
+}

@@ -1,0 +1,18 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "cost_usd": 0.005123,
+  "is_error": false,
+  "duration_ms": 3876,
+  "duration_api_ms": 3421,
+  "num_turns": 3,
+  "result": "All tests are passing. The implementation is complete.\n\nI've made a final commit with all the changes.\n\nDONE",
+  "session_id": "test-session",
+  "usage": {
+    "input_tokens": 2048,
+    "output_tokens": 256,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 1024
+  },
+  "total_cost_usd": 0.015878
+}
