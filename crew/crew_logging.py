@@ -16,6 +16,21 @@ def get_log_dir(agent_name: str, project_root: Path | None = None) -> Path:
     return log_dir
 
 
+def clear_agent_logs(agent_name: str, project_root: Path | None = None) -> None:
+    """Clear all log files for an agent.
+
+    This should be called when a new task is assigned to ensure the dashboard
+    doesn't show stale logs from previous tasks.
+
+    Args:
+        agent_name: Name of the agent
+        project_root: Optional project root path
+    """
+    log_dir = get_log_dir(agent_name, project_root)
+    for log_file in log_dir.glob("*.log"):
+        log_file.unlink()
+
+
 def get_next_log_number(agent_name: str, project_root: Path | None = None) -> int:
     """Get the next log file number for an agent."""
     log_dir = get_log_dir(agent_name, project_root)

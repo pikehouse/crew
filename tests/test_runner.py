@@ -254,6 +254,36 @@ class TestAssignTask:
 
         assert "not idle" in str(exc_info.value)
 
+    def test_assign_task_clears_previous_logs(self, project_root: Path):
+        """assign_task clears logs from previous task so dashboard shows fresh logs."""
+        from crew.crew_logging import get_log_dir, read_latest_log
+
+        state = State()
+        agent = spawn_worker("test-agent", state, project_root=project_root)
+
+        # Create some log files from a "previous task"
+        log_dir = get_log_dir(agent.name, project_root)
+        (log_dir / "001-init.log").write_text("old task log 1")
+        (log_dir / "002-step.log").write_text("old task log 2")
+
+        # Verify logs exist
+        assert read_latest_log(agent.name, project_root) == "old task log 2"
+
+        with patch("crew.runner.create_worktree") as mock_create_wt, \
+             patch("crew.runner.get_task_description") as mock_get_desc, \
+             patch("crew.runner.generate_session_id") as mock_gen_session:
+
+            worktree_path = project_root / "agents" / "test-agent-c-789"
+            worktree_path.mkdir(parents=True, exist_ok=True)
+            mock_create_wt.return_value = worktree_path
+            mock_get_desc.return_value = "New task"
+            mock_gen_session.return_value = "session-uuid-789"
+
+            assign_task(agent, "c-789", state, project_root=project_root)
+
+            # Logs from previous task should be cleared
+            assert read_latest_log(agent.name, project_root) is None
+
 
 class TestStepAgent:
     """Tests for step_agent function."""
