@@ -23,6 +23,9 @@ class Agent:
     started_at: datetime = field(default_factory=datetime.now)
     step_count: int = 0
     last_step_at: datetime | None = None
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cost_usd: float = 0.0
 
     def to_dict(self) -> dict:
         """Serialize to dictionary for JSON storage."""
@@ -36,6 +39,9 @@ class Agent:
             "started_at": self.started_at.isoformat(),
             "step_count": self.step_count,
             "last_step_at": self.last_step_at.isoformat() if self.last_step_at else None,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "total_cost_usd": self.total_cost_usd,
         }
 
     @classmethod
@@ -51,6 +57,9 @@ class Agent:
             started_at=datetime.fromisoformat(data["started_at"]),
             step_count=data.get("step_count", 0),
             last_step_at=datetime.fromisoformat(data["last_step_at"]) if data.get("last_step_at") else None,
+            total_input_tokens=data.get("total_input_tokens", 0),
+            total_output_tokens=data.get("total_output_tokens", 0),
+            total_cost_usd=data.get("total_cost_usd", 0.0),
         )
 
     @property
