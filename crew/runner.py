@@ -13,7 +13,7 @@ import os
 import signal
 
 from crew.agent import Agent
-from crew.crew_logging import write_log, read_latest_log
+from crew.crew_logging import clear_agent_logs, read_latest_log, write_log
 from crew.git import create_worktree, remove_worktree, merge_branch, delete_branch, run_git
 from crew.state import State, save_state
 
@@ -226,6 +226,9 @@ def assign_task(
 
     project_root = project_root or Path.cwd()
     agents_dir = project_root / "agents"
+
+    # Clear previous task's logs so dashboard shows fresh logs for this task
+    clear_agent_logs(agent.name, project_root)
 
     # Create unique branch name for this task
     branch_name = f"agent/{agent.name}-{task_id}"
