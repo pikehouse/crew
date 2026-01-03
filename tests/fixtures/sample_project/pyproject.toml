@@ -1,0 +1,9 @@
+[project]
+name = "sample-project"
+version = "0.1.0"
+description = "Sample project for e2e testing"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
