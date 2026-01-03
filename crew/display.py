@@ -190,6 +190,7 @@ def print_help() -> None:
 [bold]Commands:[/bold]
 
   [cyan]dashboard[/cyan], [cyan]d[/cyan], [cyan]s[/cyan]  Show dashboard with agent table and costs
+                   Use -l/--live for auto-refreshing htop-style view (q to exit)
   [cyan]spawn[/cyan] <n|name> [task] Create n workers (a,b,c...) or named worker
   [cyan]run[/cyan]              Start agents in background
   [cyan]stop[/cyan]             Stop background runner (Ctrl-C also works)

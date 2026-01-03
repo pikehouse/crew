@@ -19,6 +19,7 @@ from crew.cli import (
     get_prompt,
     _next_worker_name,
     recover_session,
+    render_dashboard,
 )
 
 
@@ -1129,3 +1130,117 @@ class TestRecoverSession:
 
         captured = capsys.readouterr()
         assert "Reset ready-missing to idle" in captured.out
+
+
+class TestRenderDashboard:
+    """Test the render_dashboard function."""
+
+    def test_render_dashboard_returns_group(self, project_root: Path, empty_state: State):
+        """Test render_dashboard returns a Rich Group."""
+        from rich.console import Group
+
+        result = render_dashboard(empty_state, project_root, runner_active=False)
+        assert isinstance(result, Group)
+
+    def test_render_dashboard_runner_stopped(self, project_root: Path, empty_state: State):
+        """Test render_dashboard shows runner stopped when not active."""
+        from rich.console import Console
+        from io import StringIO
+
+        console = Console(file=StringIO(), force_terminal=True)
+        result = render_dashboard(empty_state, project_root, runner_active=False)
+        console.print(result)
+        output = console.file.getvalue()
+        assert "Runner stopped" in output
+
+    def test_render_dashboard_runner_active(self, project_root: Path, empty_state: State):
+        """Test render_dashboard shows runner active when running."""
+        from rich.console import Console
+        from io import StringIO
+
+        console = Console(file=StringIO(), force_terminal=True)
+        result = render_dashboard(empty_state, project_root, runner_active=True)
+        console.print(result)
+        output = console.file.getvalue()
+        assert "Runner active" in output
+
+    def test_render_dashboard_no_agents(self, project_root: Path, empty_state: State):
+        """Test render_dashboard shows 'No agents' when empty."""
+        from rich.console import Console
+        from io import StringIO
+
+        console = Console(file=StringIO(), force_terminal=True)
+        result = render_dashboard(empty_state, project_root, runner_active=False)
+        console.print(result)
+        output = console.file.getvalue()
+        assert "No agents" in output
+
+    def test_render_dashboard_with_agents(self, project_root: Path):
+        """Test render_dashboard includes agent information."""
+        from rich.console import Console
+        from io import StringIO
+
+        state = State()
+        agent = Agent(
+            name="render-test",
+            session="sess",
+            worktree=Path("/tmp/test"),
+            branch="main",
+            task="Test task",
+            status="working",
+            total_input_tokens=1000,
+            total_output_tokens=500,
+            total_cost_usd=0.05,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.read_log_tail") as mock_log:
+            mock_log.return_value = None
+            console = Console(file=StringIO(), force_terminal=True)
+            result = render_dashboard(state, project_root, runner_active=False)
+            console.print(result)
+            output = console.file.getvalue()
+
+        assert "render-test" in output
+        assert "Test task" in output
+        assert "working" in output
+
+
+class TestDashboardLiveMode:
+    """Test the dashboard live mode flag parsing."""
+
+    def test_dashboard_accepts_l_flag(self, empty_state: State, project_root: Path):
+        """Test dashboard accepts -l flag for live mode."""
+        with patch("crew.cli._run_live_dashboard") as mock_live:
+            cmd_dashboard(empty_state, ["-l"], project_root)
+            mock_live.assert_called_once_with(empty_state, project_root)
+
+    def test_dashboard_accepts_live_flag(self, empty_state: State, project_root: Path):
+        """Test dashboard accepts --live flag for live mode."""
+        with patch("crew.cli._run_live_dashboard") as mock_live:
+            cmd_dashboard(empty_state, ["--live"], project_root)
+            mock_live.assert_called_once_with(empty_state, project_root)
+
+    def test_dashboard_without_flag_not_live(self, empty_state: State, project_root: Path):
+        """Test dashboard without flag does not run in live mode."""
+        with patch("crew.cli._run_live_dashboard") as mock_live:
+            cmd_dashboard(empty_state, [], project_root)
+            mock_live.assert_not_called()
+
+    def test_handle_command_dashboard_l_flag(self, empty_state: State, project_root: Path):
+        """Test handle_command passes -l flag to dashboard."""
+        with patch("crew.cli._run_live_dashboard") as mock_live:
+            handle_command("dashboard -l", empty_state, project_root)
+            mock_live.assert_called_once()
+
+    def test_handle_command_d_l_flag(self, empty_state: State, project_root: Path):
+        """Test handle_command passes -l flag with d shortcut."""
+        with patch("crew.cli._run_live_dashboard") as mock_live:
+            handle_command("d -l", empty_state, project_root)
+            mock_live.assert_called_once()
+
+    def test_handle_command_s_live_flag(self, empty_state: State, project_root: Path):
+        """Test handle_command passes --live flag with s shortcut."""
+        with patch("crew.cli._run_live_dashboard") as mock_live:
+            handle_command("s --live", empty_state, project_root)
+            mock_live.assert_called_once()

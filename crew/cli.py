@@ -963,32 +963,40 @@ def cmd_queue(state, args: list[str]) -> None:
     console.print(f"[dim]{total} open tickets: {ready} ready, {total - ready - blocked} pending, {blocked} blocked[/dim]")
 
 
-def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
-    """Show dashboard with runner status, costs, and agent table."""
-    global _runner
+def render_dashboard(state, project_root: Path, runner_active: bool = False) -> "Group":
+    """Render dashboard content as a Rich renderable.
+
+    Args:
+        state: Current crew state
+        project_root: Project root path
+        runner_active: Whether the background runner is active
+
+    Returns:
+        A Rich Group containing all dashboard elements
+    """
     from rich.table import Table
     from rich.panel import Panel
     from rich.text import Text
+    from rich.console import Group
 
-    # Print any pending events first
-    print_runner_events()
+    renderables = []
 
     # Runner status
-    if _runner and _runner.is_running:
+    if runner_active:
         working = len([a for a in state.agents.values() if a.status in ("ready", "working")])
         idle = len([a for a in state.agents.values() if a.status == "idle"])
         if working:
-            console.print(f"[bold green]● Runner active[/bold green] ({working} working, {idle} idle)")
+            renderables.append(Text.from_markup(f"[bold green]● Runner active[/bold green] ({working} working, {idle} idle)"))
         else:
-            console.print(f"[bold green]● Runner active[/bold green] ({idle} idle)")
+            renderables.append(Text.from_markup(f"[bold green]● Runner active[/bold green] ({idle} idle)"))
     else:
-        console.print("[dim]○ Runner stopped[/dim]")
+        renderables.append(Text.from_markup("[dim]○ Runner stopped[/dim]"))
 
     # Session cost total
     total_tokens = sum(a.total_input_tokens + a.total_output_tokens for a in state.agents.values())
     total_cost = sum(a.total_cost_usd for a in state.agents.values())
-    console.print(f"[bold]Session:[/bold] {total_tokens:,} tokens, ${total_cost:.4f}")
-    console.print()
+    renderables.append(Text.from_markup(f"[bold]Session:[/bold] {total_tokens:,} tokens, ${total_cost:.4f}"))
+    renderables.append(Text(""))  # Empty line
 
     # Agent table with columns: NAME, TASK, STATUS, STEPS, TOKENS, COST
     if state.agents:
@@ -1023,12 +1031,12 @@ def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
                 f"${agent.total_cost_usd:.4f}" if agent.total_cost_usd else "-",
             )
 
-        console.print(table)
+        renderables.append(table)
 
         # Log tail panels for working agents
         working_agents = [a for a in state.agents.values() if a.status in ("ready", "working")]
         if working_agents:
-            console.print()
+            renderables.append(Text(""))  # Empty line
             colors = ["cyan", "green", "yellow", "magenta", "blue", "red"]
             for i, agent in enumerate(working_agents):
                 color = colors[i % len(colors)]
@@ -1043,7 +1051,7 @@ def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
                     header = f"● {agent.name}"
                     if agent.task:
                         header += f" → {agent.task}"
-                    console.print(Panel(
+                    renderables.append(Panel(
                         truncated,
                         title=f"[bold {color}]{header}[/bold {color}]",
                         border_style=color,
@@ -1051,11 +1059,139 @@ def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
                     ))
 
         # Git status panels for working agents
-        from crew.git import run_git
-        console.print()
-        print_git_status_panels(list(state.agents.values()), run_git)
+        from crew.git import run_git, GitError
+
+        working_agents = [a for a in state.agents.values() if a.worktree and a.status in ("ready", "working")]
+        if working_agents:
+            renderables.append(Text(""))  # Empty line
+            for i, agent in enumerate(working_agents):
+                color = colors[i % len(colors)]
+
+                # Get git status --short
+                try:
+                    status = run_git("status", "--short", cwd=agent.worktree)
+                except (GitError, OSError):
+                    status = "[dim]Unable to read worktree[/dim]"
+
+                # Get git diff --stat
+                try:
+                    diff_stat = run_git("diff", "--stat", "HEAD", cwd=agent.worktree)
+                except (GitError, OSError):
+                    diff_stat = ""
+
+                # Build content
+                content_parts = []
+                if status.strip():
+                    content_parts.append(f"[bold]Status:[/bold]\n{status}")
+                if diff_stat.strip():
+                    content_parts.append(f"[bold]Diff:[/bold]\n{diff_stat}")
+
+                content = "\n\n".join(content_parts) if content_parts else "[dim]No changes yet[/dim]"
+
+                # Build header
+                header = f"● {agent.name}"
+                if agent.task:
+                    header += f" → {agent.task}"
+
+                renderables.append(Panel(
+                    content,
+                    title=f"[bold {color}]{header}[/bold {color}]",
+                    border_style=color,
+                    padding=(0, 1),
+                ))
     else:
-        console.print("[dim]No agents.[/dim]")
+        renderables.append(Text.from_markup("[dim]No agents.[/dim]"))
+
+    return Group(*renderables)
+
+
+def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
+    """Show dashboard with runner status, costs, and agent table.
+
+    Usage:
+        dashboard         Show dashboard once
+        dashboard -l      Live mode: auto-refresh every 2 seconds, press 'q' to exit
+        dashboard --live  Same as -l
+    """
+    global _runner
+
+    # Check for live mode flag
+    live_mode = "-l" in args or "--live" in args
+
+    if live_mode:
+        _run_live_dashboard(state, project_root)
+    else:
+        # Print any pending events first
+        print_runner_events()
+
+        # Render and print dashboard
+        runner_active = _runner is not None and _runner.is_running
+        dashboard = render_dashboard(state, project_root, runner_active)
+        console.print(dashboard)
+
+
+def _run_live_dashboard(state, project_root: Path) -> None:
+    """Run the dashboard in live mode with auto-refresh.
+
+    Refreshes every 2 seconds. Press 'q' to exit back to REPL.
+    """
+    global _runner
+    import sys
+    import select
+    import termios
+    import tty
+    from rich.live import Live
+
+    # Save terminal settings
+    old_settings = termios.tcgetattr(sys.stdin)
+
+    try:
+        # Set terminal to raw mode for single key detection
+        tty.setcbreak(sys.stdin.fileno())
+
+        console.print("[dim]Live dashboard mode. Press 'q' to exit.[/dim]")
+        console.print()
+
+        with Live(console=console, refresh_per_second=0.5, screen=False) as live:
+            while True:
+                # Check for 'q' key press (non-blocking)
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    key = sys.stdin.read(1)
+                    if key.lower() == 'q':
+                        break
+
+                # Drain and display any pending runner events
+                if _runner:
+                    for event in _runner.drain_events():
+                        if event.type == "assigned":
+                            console.print(f"  [cyan]▶[/cyan] {event.agent_name} assigned {event.message}")
+                        elif event.type == "step":
+                            console.print(f"  [dim]→ {event.agent_name}:[/dim] {event.message[:50]}...")
+                        elif event.type == "done":
+                            console.print(f"  [green]✓[/green] [bold]{event.agent_name}[/bold] completed {event.message}")
+                        elif event.type == "merged":
+                            console.print(f"  [green]✓[/green] Merged {event.message}")
+                        elif event.type == "error":
+                            console.print(f"  [red]✗[/red] {event.agent_name}: {event.message}")
+                        elif event.type == "stopped":
+                            console.print(f"  [blue]ℹ[/blue] {event.message}")
+
+                # Update the live display
+                runner_active = _runner is not None and _runner.is_running
+                dashboard = render_dashboard(state, project_root, runner_active)
+                live.update(dashboard)
+
+                # Sleep for 2 seconds (the refresh interval)
+                import time
+                time.sleep(2)
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Restore terminal settings
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        console.print()
+        console.print("[dim]Exited live mode.[/dim]")
 
 
 def handle_command(line: str, state, project_root: Path) -> bool:
