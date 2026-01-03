@@ -795,9 +795,52 @@ def cmd_merge(state, args: list[str], project_root: Path) -> None:
 
 
 def cmd_ready(state, args: list[str]) -> None:
-    """Show ready tickets."""
+    """Show ready tickets with agent assignment indicators."""
     output = run_tk("ready")
-    console.print(output if output.strip() else "[dim]No ready work.[/dim]")
+    if not output.strip():
+        console.print("[dim]No ready work.[/dim]")
+        return
+
+    # Build map of task_id -> agent_name for assigned tasks
+    assigned = {}
+    for agent in state.agents.values():
+        if agent.task:
+            assigned[agent.task] = agent.name
+
+    # Process each line and add assignment markers
+    in_progress = []
+    available = []
+
+    for line in output.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        task_id = parts[0]
+        if task_id in assigned:
+            agent_name = assigned[task_id]
+            in_progress.append((task_id, line, agent_name))
+        else:
+            available.append(line)
+
+    # Display in progress tickets first
+    if in_progress:
+        console.print("[bold yellow]In Progress[/bold yellow]")
+        for task_id, line, agent_name in in_progress:
+            # Replace the task_id with a marked version
+            # Use \[ to escape opening bracket in Rich markup
+            marked_line = line.replace(task_id, f"{task_id} \\[{agent_name}]", 1)
+            console.print(f"  {marked_line}")
+        console.print()
+
+    # Display available tickets
+    if available:
+        console.print("[bold green]Available[/bold green]")
+        for line in available:
+            console.print(f"  {line}")
+    elif not in_progress:
+        console.print("[dim]No ready work.[/dim]")
 
 
 def cmd_new(state, args: list[str]) -> None:
