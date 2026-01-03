@@ -130,7 +130,8 @@ def print_help() -> None:
     help_text = """
 [bold]Commands:[/bold]
 
-  [cyan]status[/cyan], [cyan]s[/cyan]          Show all agents and queue
+  [cyan]dashboard[/cyan], [cyan]d[/cyan], [cyan]s[/cyan]  Show dashboard with agent table and costs
+  [cyan]status[/cyan]           Show all agents and queue (detailed)
   [cyan]spawn[/cyan] <n|name> [task] Create n workers (a,b,c...) or named worker
   [cyan]step[/cyan] <name>       Run one step for agent
   [cyan]run[/cyan]              Start agents in background

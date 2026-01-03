@@ -865,6 +865,70 @@ def cmd_assign(state, args: list[str], project_root: Path) -> None:
     print_info(f"Assigned {task_id} to {name}")
 
 
+def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
+    """Show dashboard with runner status, costs, and agent table."""
+    global _runner
+    from rich.table import Table
+    from rich.text import Text
+
+    # Print any pending events first
+    print_runner_events()
+
+    # Runner status
+    if _runner and _runner.is_running:
+        working = len([a for a in state.agents.values() if a.status in ("ready", "working")])
+        idle = len([a for a in state.agents.values() if a.status == "idle"])
+        if working:
+            console.print(f"[bold green]● Runner active[/bold green] ({working} working, {idle} idle)")
+        else:
+            console.print(f"[bold green]● Runner active[/bold green] ({idle} idle)")
+    else:
+        console.print("[dim]○ Runner stopped[/dim]")
+
+    # Session cost total
+    total_tokens = sum(a.total_input_tokens + a.total_output_tokens for a in state.agents.values())
+    total_cost = sum(a.total_cost_usd for a in state.agents.values())
+    console.print(f"[bold]Session:[/bold] {total_tokens:,} tokens, ${total_cost:.4f}")
+    console.print()
+
+    # Agent table with columns: NAME, TASK, STATUS, STEPS, TOKENS, COST
+    if state.agents:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("NAME")
+        table.add_column("TASK")
+        table.add_column("STATUS")
+        table.add_column("STEPS", justify="right")
+        table.add_column("TOKENS", justify="right")
+        table.add_column("COST", justify="right")
+
+        for agent in state.agents.values():
+            # Status with color
+            status_styles = {
+                "idle": "dim",
+                "ready": "yellow",
+                "working": "green",
+                "done": "blue",
+                "stuck": "red",
+            }
+            style = status_styles.get(agent.status, "")
+
+            # Calculate tokens
+            tokens = agent.total_input_tokens + agent.total_output_tokens
+
+            table.add_row(
+                agent.name,
+                agent.task or "-",
+                Text(agent.status, style=style),
+                str(agent.step_count),
+                f"{tokens:,}" if tokens else "-",
+                f"${agent.total_cost_usd:.4f}" if agent.total_cost_usd else "-",
+            )
+
+        console.print(table)
+    else:
+        console.print("[dim]No agents.[/dim]")
+
+
 def handle_command(line: str, state, project_root: Path) -> bool:
     """Handle a command line. Returns True to continue, False to quit."""
     parts = line.strip().split()
@@ -878,7 +942,9 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         return False
     elif cmd in ("h", "help"):
         print_help()
-    elif cmd in ("s", "status"):
+    elif cmd in ("dashboard", "d", "s"):
+        cmd_dashboard(state, args, project_root)
+    elif cmd == "status":
         cmd_status(state, args, project_root)
     elif cmd == "spawn":
         cmd_spawn(state, args, project_root)
