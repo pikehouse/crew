@@ -15,6 +15,7 @@ from crew.state import State
 from crew.cli import (
     cmd_dashboard,
     cmd_queue,
+    cmd_ready,
     handle_command,
     get_prompt,
     _next_worker_name,
@@ -808,6 +809,118 @@ class TestQueueCommandRegistration:
         """Test 'exit' still works for exiting."""
         result = handle_command("exit", empty_state, project_root)
         assert result is False
+
+
+class TestReadyCommand:
+    """Test the ready command output with agent assignment indicators."""
+
+    def test_ready_no_tickets(self, empty_state: State, capsys):
+        """Test ready shows message when no tickets."""
+        with patch("crew.cli.run_tk") as mock_run_tk:
+            mock_run_tk.return_value = ""
+            cmd_ready(empty_state, [])
+            captured = capsys.readouterr()
+            assert "No ready work" in captured.out
+
+    def test_ready_shows_available_tickets(self, empty_state: State, capsys):
+        """Test ready shows available tickets without assignments."""
+        with patch("crew.cli.run_tk") as mock_run_tk:
+            mock_run_tk.return_value = "c-1234 Add new feature\nc-5678 Fix bug"
+            cmd_ready(empty_state, [])
+            captured = capsys.readouterr()
+            assert "Available" in captured.out
+            assert "c-1234" in captured.out
+            assert "c-5678" in captured.out
+
+    def test_ready_shows_in_progress_for_assigned_tickets(self, empty_state: State, capsys):
+        """Test ready shows In Progress section for assigned tickets."""
+        # Add an agent with an assigned task
+        agent = Agent(
+            name="a",
+            session="test-session",
+            worktree=Path("/tmp/worktree"),
+            branch="agent/a-c-1234",
+            task="c-1234",
+            status="working",
+        )
+        empty_state.agents["a"] = agent
+
+        with patch("crew.cli.run_tk") as mock_run_tk:
+            mock_run_tk.return_value = "c-1234 Add new feature\nc-5678 Fix bug"
+            cmd_ready(empty_state, [])
+            captured = capsys.readouterr()
+            assert "In Progress" in captured.out
+            assert "[a]" in captured.out  # Agent name marker
+            assert "Available" in captured.out
+            assert "c-5678" in captured.out
+
+    def test_ready_shows_agent_name_in_brackets(self, empty_state: State, capsys):
+        """Test assigned tickets show agent name in brackets like [a]."""
+        agent = Agent(
+            name="b",
+            session="test-session",
+            worktree=Path("/tmp/worktree"),
+            branch="agent/b-c-9999",
+            task="c-9999",
+            status="ready",
+        )
+        empty_state.agents["b"] = agent
+
+        with patch("crew.cli.run_tk") as mock_run_tk:
+            mock_run_tk.return_value = "c-9999 Some task"
+            cmd_ready(empty_state, [])
+            captured = capsys.readouterr()
+            assert "c-9999 [b]" in captured.out
+
+    def test_ready_all_assigned(self, empty_state: State, capsys):
+        """Test when all ready tickets are assigned to agents."""
+        agent = Agent(
+            name="x",
+            session="test-session",
+            worktree=Path("/tmp/worktree"),
+            branch="agent/x-c-1111",
+            task="c-1111",
+            status="working",
+        )
+        empty_state.agents["x"] = agent
+
+        with patch("crew.cli.run_tk") as mock_run_tk:
+            mock_run_tk.return_value = "c-1111 Only task"
+            cmd_ready(empty_state, [])
+            captured = capsys.readouterr()
+            assert "In Progress" in captured.out
+            assert "Available" not in captured.out
+
+    def test_ready_multiple_agents(self, empty_state: State, capsys):
+        """Test ready with multiple agents assigned to different tickets."""
+        agent_a = Agent(
+            name="a",
+            session="test-session-a",
+            worktree=Path("/tmp/worktree-a"),
+            branch="agent/a-c-1",
+            task="c-1",
+            status="working",
+        )
+        agent_b = Agent(
+            name="b",
+            session="test-session-b",
+            worktree=Path("/tmp/worktree-b"),
+            branch="agent/b-c-2",
+            task="c-2",
+            status="working",
+        )
+        empty_state.agents["a"] = agent_a
+        empty_state.agents["b"] = agent_b
+
+        with patch("crew.cli.run_tk") as mock_run_tk:
+            mock_run_tk.return_value = "c-1 Task 1\nc-2 Task 2\nc-3 Task 3"
+            cmd_ready(empty_state, [])
+            captured = capsys.readouterr()
+            assert "In Progress" in captured.out
+            assert "[a]" in captured.out
+            assert "[b]" in captured.out
+            assert "Available" in captured.out
+            assert "c-3" in captured.out
 
 
 class TestRecoverSession:

@@ -201,7 +201,7 @@ def print_help() -> None:
   [cyan]cleanup[/cyan] <name>    Remove agent and worktree
   [cyan]merge[/cyan] <name>      Merge agent's branch to main
 
-  [cyan]ready[/cyan], [cyan]r[/cyan]          Show ready tickets (tk ready)
+  [cyan]ready[/cyan], [cyan]r[/cyan]          Show ready tickets with agent assignments
   [cyan]new[/cyan] <title> [--dep <id>...]   Create ticket with optional dependencies
   [cyan]dep[/cyan] <ticket> <depends-on>    Add dependency (ticket blocked by depends-on)
   [cyan]assign[/cyan] <name> <id> Assign ticket to agent
