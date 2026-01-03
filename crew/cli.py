@@ -299,49 +299,6 @@ def cmd_spawn(state, args: list[str], project_root: Path) -> None:
         print_error(f"Failed to spawn worker: {e}")
 
 
-def cmd_step(state, args: list[str], project_root: Path) -> None:
-    """Step an agent."""
-    if not args:
-        print_error("Usage: step <name>")
-        return
-
-    name = args[0]
-    agent = state.get_agent(name)
-
-    if not agent:
-        print_error(f"Agent '{name}' not found")
-        return
-
-    if agent.status == "done":
-        print_info(f"Agent '{name}' is already done")
-        return
-
-    if agent.status not in ("ready", "working", "idle"):
-        print_error(f"Agent '{name}' has status '{agent.status}' and cannot be stepped")
-        return
-
-    try:
-        from rich.status import Status
-        with Status(f"[bold blue]Stepping {name}...[/] (step {agent.step_count + 1})", console=console):
-            output = step_agent(agent, state, project_root=project_root)
-        print_agent_step(agent, output[:100] if output else "")
-
-        if agent.is_done:
-            print_agent_done(agent)
-            # Auto-merge
-            try:
-                with Status(f"[bold blue]Merging {agent.branch}...[/]", console=console):
-                    cleanup_agent(agent, state, merge=True, project_root=project_root)
-                print_agent_merged(agent)
-            except Exception as e:
-                print_error(f"Auto-merge failed: {e}")
-
-    except TimeoutError:
-        print_error(f"Step timed out. Use 'peek {name}' to see last output.")
-    except Exception as e:
-        print_error(f"Step failed: {e}")
-
-
 def cmd_run(state, args: list[str], project_root: Path) -> None:
     """Start running all agents in background."""
     global _runner
@@ -853,8 +810,6 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_dashboard(state, args, project_root)
     elif cmd == "spawn":
         cmd_spawn(state, args, project_root)
-    elif cmd == "step":
-        cmd_step(state, args, project_root)
     elif cmd == "run":
         cmd_run(state, args, project_root)
     elif cmd == "stop":
