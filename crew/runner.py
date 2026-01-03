@@ -1,0 +1,563 @@
+"""Agent runner - spawn, step, and manage Claude Code agents."""
+
+from __future__ import annotations
+
+import asyncio
+import subprocess
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+from crew.agent import Agent
+from crew.crew_logging import write_log
+from crew.git import create_worktree, remove_worktree, merge_branch, delete_branch, run_git
+from crew.state import State, save_state
+
+
+def generate_session_id() -> str:
+    """Generate a new session ID (UUID)."""
+    return str(uuid.uuid4())
+
+
+def get_ready_tasks() -> list[str]:
+    """Get list of ready task IDs from tk."""
+    try:
+        result = subprocess.run(
+            ["tk", "ready"],
+            capture_output=True,
+            text=True,
+        )
+        tasks = []
+        for line in result.stdout.strip().split("\n"):
+            if line.strip():
+                parts = line.split()
+                if parts:
+                    tasks.append(parts[0])
+        return tasks
+    except FileNotFoundError:
+        return []
+
+
+def get_task_description(task_id: str) -> str:
+    """Get task description from tk."""
+    try:
+        result = subprocess.run(
+            ["tk", "show", task_id],
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip() if result.stdout.strip() else f"Work on {task_id}"
+    except FileNotFoundError:
+        return f"Work on {task_id}"
+
+
+# Template for agent CLAUDE.md
+AGENT_TEMPLATE = """# Agent: {name}
+
+You are an autonomous agent working in a git worktree.
+
+## Your Task
+
+{task_description}
+
+## Rules
+
+1. Stay in this directory: {worktree}
+2. Commit your changes frequently with meaningful messages
+3. When your task is complete, output the word DONE on its own line
+4. If you discover additional work needed, create a ticket with `tk create "..."` but don't work on it yourself
+5. Focus only on your assigned task
+
+## Current Status
+
+Task ID: {task_id}
+Started: {started}
+
+Begin working now.
+"""
+
+# Prompts
+INIT_PROMPT = "Read CLAUDE.md and begin working on your assigned task."
+STEP_PROMPT = "Continue working on your task. When complete, output DONE on its own line."
+
+
+def run_claude(
+    prompt: str,
+    cwd: Path,
+    session: str | None = None,
+    is_new_session: bool = False,
+    timeout: int = 300,
+) -> tuple[str, str]:
+    """Run claude --print and capture output.
+
+    Args:
+        prompt: The prompt to send
+        cwd: Working directory
+        session: Session ID (required if is_new_session or resuming)
+        is_new_session: If True, use --session-id to create new session
+        timeout: Timeout in seconds
+
+    Returns:
+        Tuple of (stdout, stderr)
+    """
+    cmd = ["claude", "--print"]
+
+    if session:
+        if is_new_session:
+            # First call: create session with specific ID
+            cmd.extend(["--session-id", session])
+        else:
+            # Subsequent calls: resume existing session
+            cmd.extend(["--resume", session])
+
+    cmd.extend(["-p", prompt])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,  # Don't wait for stdin
+        )
+        return result.stdout, result.stderr
+
+    except subprocess.TimeoutExpired:
+        raise TimeoutError(f"Claude command timed out after {timeout}s")
+    except FileNotFoundError:
+        raise RuntimeError("Claude CLI not found. Is it installed and in PATH?")
+
+
+def is_done(output: str) -> bool:
+    """Check if agent output indicates task completion."""
+    # Look for DONE on its own line
+    lines = output.strip().split("\n")
+    for line in lines:
+        if line.strip().upper() == "DONE":
+            return True
+    return False
+
+
+def spawn_worker(
+    name: str,
+    state: State,
+    project_root: Path | None = None,
+) -> Agent:
+    """Spawn a new worker agent (idle, no task yet).
+
+    Creates an agent that will wait for work to be assigned.
+
+    Args:
+        name: Agent name
+        state: Current state
+        project_root: Project root path
+
+    Returns:
+        The created Agent (status="idle")
+    """
+    project_root = project_root or Path.cwd()
+
+    # Create agent in "idle" state (no worktree yet)
+    agent = Agent(
+        name=name,
+        session="",  # Will be set when task is assigned
+        worktree=None,
+        branch="",
+        task=None,
+        status="idle",
+        started_at=datetime.now(),
+        step_count=0,
+        last_step_at=None,
+    )
+
+    # Save state
+    state.add_agent(agent)
+    save_state(state, project_root)
+
+    return agent
+
+
+def assign_task(
+    agent: Agent,
+    task_id: str,
+    state: State,
+    project_root: Path | None = None,
+) -> None:
+    """Assign a task to an idle agent.
+
+    Creates worktree, branch, and CLAUDE.md for the task.
+
+    Args:
+        agent: The agent to assign work to (must be idle)
+        task_id: Ticket ID to assign
+        state: Current state
+        project_root: Project root path
+    """
+    if agent.status != "idle":
+        raise RuntimeError(f"Agent {agent.name} is not idle (status={agent.status})")
+
+    project_root = project_root or Path.cwd()
+    agents_dir = project_root / "agents"
+
+    # Create unique branch name for this task
+    branch_name = f"agent/{agent.name}-{task_id}"
+    worktree_name = f"{agent.name}-{task_id}"
+
+    # Create worktree
+    worktree = create_worktree(worktree_name, agents_dir)
+
+    # Get task description
+    task_description = get_task_description(task_id)
+
+    # Generate new session ID for this task
+    session_id = generate_session_id()
+
+    # Write CLAUDE.md
+    claude_md = worktree / "CLAUDE.md"
+    claude_md.write_text(AGENT_TEMPLATE.format(
+        name=agent.name,
+        task_description=task_description,
+        task_id=task_id,
+        worktree=worktree,
+        started=datetime.now().isoformat(),
+    ))
+
+    # Update agent
+    agent.session = session_id
+    agent.worktree = worktree
+    agent.branch = branch_name
+    agent.task = task_id
+    agent.status = "ready"
+    agent.step_count = 0
+    agent.last_step_at = None
+
+    save_state(state, project_root)
+
+
+MERGE_CONFLICT_PROMPT = """You are resolving a git merge conflict.
+
+Multiple agents have been working on this codebase in parallel. Their changes need to be combined.
+
+IMPORTANT: We want to KEEP BOTH sets of changes where possible. These are not conflicting features - they are complementary work from different agents that should coexist.
+
+The conflict markers look like:
+<<<<<<< HEAD
+(current main branch code)
+=======
+(incoming branch code)
+>>>>>>> branch-name
+
+For each conflicted file:
+1. Read the file to understand the conflicts
+2. Edit the file to combine BOTH versions intelligently
+3. Remove all conflict markers (<<<<<<, =======, >>>>>>>)
+4. Make sure the result is valid, working code that includes both changes
+
+After resolving all conflicts, run: git add -A && git commit -m "Resolve merge conflicts: combine work from multiple agents"
+
+Then output DONE on its own line.
+"""
+
+
+def resolve_merge_conflicts(project_root: Path) -> bool:
+    """Use Claude to resolve merge conflicts.
+
+    Returns True if conflicts were resolved, False if resolution failed.
+    """
+    # Check if there are actually conflicts
+    try:
+        status = run_git("status", "--porcelain", cwd=project_root)
+        if "UU " not in status and "AA " not in status:
+            return True  # No conflicts
+    except:
+        pass
+
+    # Use Claude to resolve conflicts
+    session_id = generate_session_id()
+    try:
+        stdout, stderr = run_claude(
+            MERGE_CONFLICT_PROMPT,
+            cwd=project_root,
+            session=session_id,
+            is_new_session=True,
+            timeout=600,  # Give it more time for complex merges
+        )
+
+        # Check if Claude said DONE
+        if is_done(stdout):
+            return True
+
+        # Maybe it needs another step
+        stdout2, stderr2 = run_claude(
+            "Continue resolving conflicts. When done, output DONE.",
+            cwd=project_root,
+            session=session_id,
+            is_new_session=False,
+            timeout=600,
+        )
+
+        return is_done(stdout2)
+
+    except Exception as e:
+        return False
+
+
+def complete_task(
+    agent: Agent,
+    state: State,
+    project_root: Path | None = None,
+) -> None:
+    """Complete an agent's task - merge, cleanup worktree, return to idle.
+
+    Args:
+        agent: The agent that completed its task
+        state: Current state
+        project_root: Project root path
+    """
+    project_root = project_root or Path.cwd()
+
+    # Close the ticket
+    if agent.task:
+        close_ticket(agent.task)
+
+    # Store branch name before removing worktree
+    branch_to_merge = agent.branch
+    worktree_path = agent.worktree
+
+    # FIRST: Remove worktree (so the branch is no longer checked out)
+    if worktree_path:
+        remove_worktree(worktree_path)
+
+    # THEN: Merge the branch from main
+    run_git("checkout", "main", cwd=project_root)
+
+    # Try the merge
+    try:
+        merge_branch(
+            branch_to_merge,
+            message=f"Merge {branch_to_merge} ({agent.task})",
+        )
+    except Exception as e:
+        # Merge failed - likely conflicts. Try to resolve with Claude.
+        if resolve_merge_conflicts(project_root):
+            # Conflicts resolved successfully
+            pass
+        else:
+            # Claude couldn't resolve - abort and report
+            try:
+                run_git("merge", "--abort", cwd=project_root)
+            except:
+                pass
+            raise RuntimeError(f"Merge failed and auto-resolution failed: {e}")
+
+    # Delete the branch
+    try:
+        delete_branch(branch_to_merge)
+    except:
+        pass  # Branch might already be deleted
+
+    # Reset agent to idle (ready for next task)
+    agent.session = ""
+    agent.worktree = None
+    agent.branch = ""
+    agent.task = None
+    agent.status = "idle"
+    agent.step_count = 0
+    agent.last_step_at = None
+
+    save_state(state, project_root)
+
+
+# Keep old spawn_agent for backward compatibility
+def spawn_agent(
+    name: str,
+    task_id: str | None,
+    task_description: str,
+    state: State,
+    project_root: Path | None = None,
+) -> Agent:
+    """Spawn a new agent with a task (legacy function).
+
+    For new code, use spawn_worker() + assign_task().
+    """
+    project_root = project_root or Path.cwd()
+
+    # Create worker
+    agent = spawn_worker(name, state, project_root)
+
+    # If task provided, assign it
+    if task_id:
+        assign_task(agent, task_id, state, project_root)
+
+    return agent
+
+
+def close_ticket(task_id: str) -> None:
+    """Close a ticket using tk."""
+    import subprocess
+    subprocess.run(["tk", "close", task_id], capture_output=True)
+
+
+def step_agent(
+    agent: Agent,
+    state: State,
+    prompt: str | None = None,
+    project_root: Path | None = None,
+) -> str:
+    """Run one step for an agent.
+
+    Args:
+        agent: The agent to step
+        state: Current state
+        prompt: The prompt to use (defaults based on step count)
+        project_root: Project root path
+
+    Returns:
+        The Claude output
+    """
+    project_root = project_root or Path.cwd()
+
+    # First step uses INIT_PROMPT, subsequent use STEP_PROMPT
+    is_first_step = agent.step_count == 0
+    if prompt is None:
+        prompt = INIT_PROMPT if is_first_step else STEP_PROMPT
+
+    # Set status to working
+    if agent.status in ("ready", "idle"):
+        agent.status = "working"
+
+    # Run claude - first step creates session, subsequent resume it
+    stdout, stderr = run_claude(
+        prompt,
+        cwd=agent.worktree,
+        session=agent.session,
+        is_new_session=is_first_step,
+    )
+
+    # Update step count
+    agent.step_count += 1
+    agent.last_step_at = datetime.now()
+
+    # Log the interaction
+    write_log(
+        agent_name=agent.name,
+        log_type="step",
+        prompt=prompt,
+        output=stdout + ("\n---STDERR---\n" + stderr if stderr else ""),
+        session=agent.session,
+        step=agent.step_count,
+        project_root=project_root,
+    )
+
+    # Check if done (but don't close ticket yet - that happens after merge)
+    if is_done(stdout):
+        agent.status = "done"
+
+    # Check if stuck (too many steps)
+    if agent.step_count >= 20 and agent.status != "done":
+        agent.status = "stuck"
+
+    # Save state
+    save_state(state, project_root)
+
+    return stdout
+
+
+def cleanup_agent(
+    agent: Agent,
+    state: State,
+    merge: bool = True,
+    project_root: Path | None = None,
+) -> None:
+    """Clean up an agent - optionally merge and remove worktree.
+
+    Args:
+        agent: The agent to clean up
+        state: Current state
+        merge: Whether to merge the branch
+        project_root: Project root path
+    """
+    project_root = project_root or Path.cwd()
+
+    if merge:
+        # Switch to main and merge
+        run_git("checkout", "main", cwd=project_root)
+        try:
+            merge_branch(
+                agent.branch,
+                message=f"Merge {agent.branch} ({agent.task or 'no task'})",
+            )
+            delete_branch(agent.branch)
+        except Exception as e:
+            raise RuntimeError(f"Merge failed: {e}. Resolve conflicts manually.")
+
+    # Remove worktree
+    remove_worktree(agent.worktree)
+
+    # Remove from state
+    state.remove_agent(agent.name)
+    save_state(state, project_root)
+
+
+async def step_agent_async(
+    agent: Agent,
+    state: State,
+    project_root: Path | None = None,
+) -> str:
+    """Async wrapper for step_agent."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: step_agent(agent, state, project_root=project_root),
+    )
+
+
+async def run_agents(
+    state: State,
+    project_root: Path | None = None,
+    on_step: callable = None,
+    on_done: callable = None,
+) -> None:
+    """Continuously step all active agents until all done.
+
+    Args:
+        state: Current state
+        project_root: Project root path
+        on_step: Callback(agent, output) after each step
+        on_done: Callback(agent) when agent completes
+    """
+    project_root = project_root or Path.cwd()
+
+    while state.active_agents:
+        # Step all active agents in parallel
+        tasks = [
+            step_agent_async(agent, state, project_root)
+            for agent in state.active_agents
+        ]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results
+        for agent, result in zip(list(state.active_agents), results):
+            if isinstance(result, Exception):
+                agent.status = "stuck"
+                save_state(state, project_root)
+                continue
+
+            if on_step:
+                on_step(agent, result)
+
+            if agent.is_done:
+                if on_done:
+                    on_done(agent)
+
+                # Auto-merge
+                try:
+                    cleanup_agent(agent, state, merge=True, project_root=project_root)
+                except Exception as e:
+                    if on_step:
+                        on_step(agent, f"Merge failed: {e}")
+
+        # Brief pause between rounds
+        await asyncio.sleep(1)
