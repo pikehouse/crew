@@ -28,6 +28,7 @@ from crew.display import (
     print_agent_done,
     print_agent_merged,
     print_peek,
+    print_git_status_panels,
 )
 from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks
 from crew.crew_logging import read_log_tail
@@ -925,6 +926,11 @@ def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
             )
 
         console.print(table)
+
+        # Git status panels for working agents
+        from crew.git import run_git
+        console.print()
+        print_git_status_panels(list(state.agents.values()), run_git)
     else:
         console.print("[dim]No agents.[/dim]")
 
