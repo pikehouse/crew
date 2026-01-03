@@ -195,7 +195,7 @@ _read_only_mode: bool = False
 
 # Commands that modify state and are blocked in read-only mode
 _MODIFYING_COMMANDS = frozenset({
-    "spawn", "run", "stop", "kill", "cleanup", "merge",
+    "spawn", "run", "work", "stop", "kill", "cleanup", "merge",
     "reset", "new", "dep", "assign"
 })
 
@@ -1216,11 +1216,11 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_queue(state, args)
     elif cmd in ("h", "help"):
         print_help()
-    elif cmd in ("dashboard", "d", "s"):
+    elif cmd in ("dashboard", "d", "s", "status", "dash", "st"):
         cmd_dashboard(state, args, project_root)
     elif cmd == "spawn":
         cmd_spawn(state, args, project_root)
-    elif cmd == "run":
+    elif cmd in ("run", "work"):
         cmd_run(state, args, project_root)
     elif cmd == "stop":
         cmd_stop(state, args, project_root)
