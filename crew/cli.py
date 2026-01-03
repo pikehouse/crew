@@ -22,15 +22,18 @@ from crew.display import (
     print_help,
     print_error,
     print_info,
+    print_warning,
     print_agent_created,
     print_agent_step,
     print_agent_done,
     print_agent_merged,
     print_peek,
     print_git_status_panels,
+    get_status_icon,
 )
-from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks
+from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks, shutdown_agent
 from crew.crew_logging import read_log_tail
+from crew.git import get_worktree_list
 
 console = Console()
 
@@ -1004,6 +1007,149 @@ def handle_command(line: str, state, project_root: Path) -> bool:
     return True
 
 
+def recover_session(state, project_root: Path) -> bool:
+    """Recover session state on startup.
+
+    Detects prior session state from .crew/state.json and reconciles it:
+    - Displays resume message showing agents and their status
+    - Validates worktrees exist on disk
+    - Warns about orphaned worktrees in agents/
+    - Resets agents to idle if their worktree is missing
+    - Reconciles working agents that were mid-step when process died
+
+    Args:
+        state: The loaded state
+        project_root: Project root path
+
+    Returns:
+        True if there was a prior session to recover, False otherwise
+    """
+    if not state.agents:
+        return False
+
+    console.print()
+    console.print("[bold]Recovering prior session...[/bold]")
+    console.print()
+
+    # Get actual worktrees from git
+    try:
+        git_worktrees = get_worktree_list()
+        # Extract paths from worktree list, filtering out bare repos
+        actual_worktree_paths = {
+            Path(wt["path"]) for wt in git_worktrees
+            if not wt.get("bare") and "path" in wt
+        }
+    except Exception as e:
+        print_warning(f"Could not list worktrees: {e}")
+        actual_worktree_paths = set()
+
+    # Track orphaned worktrees (in agents/ but not in state)
+    agents_dir = project_root / "agents"
+    orphaned_worktrees = []
+    if agents_dir.exists():
+        state_worktree_paths = {
+            Path(a.worktree) for a in state.agents.values()
+            if a.worktree
+        }
+        for subdir in agents_dir.iterdir():
+            if subdir.is_dir():
+                if subdir not in state_worktree_paths:
+                    orphaned_worktrees.append(subdir)
+
+    # Display agents and their status
+    console.print("[bold]Agents:[/bold]")
+    actions_taken = []
+
+    for agent in list(state.agents.values()):
+        status_icon = get_status_icon(agent.status)
+        task_info = f" → {agent.task}" if agent.task else ""
+
+        # Check if worktree exists on disk
+        worktree_exists = (
+            agent.worktree
+            and Path(agent.worktree).exists()
+            and Path(agent.worktree) in actual_worktree_paths
+        )
+
+        # Handle different recovery scenarios
+        if agent.status in ("ready", "working"):
+            if not worktree_exists and agent.worktree:
+                # Worktree missing but agent expects it - reset to idle
+                old_status = agent.status
+                old_task = agent.task
+                agent.status = "idle"
+                agent.worktree = None
+                agent.branch = ""
+                agent.task = None
+                agent.session = ""
+                agent.step_count = 0
+                agent.last_step_at = None
+                console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim]({old_status})[/dim]")
+                actions_taken.append(f"Reset {agent.name} to idle (worktree missing)")
+            else:
+                # Worktree exists - reconcile mid-step agent
+                console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim]({agent.status})[/dim]")
+                # Use shutdown_agent to reconcile state based on logs
+                work_status = shutdown_agent(agent, state, project_root)
+                if work_status == "done":
+                    actions_taken.append(f"Marked {agent.name} as done (found DONE in logs)")
+                elif work_status == "partial":
+                    actions_taken.append(f"Agent {agent.name} has partial work (can resume)")
+                elif work_status == "nothing":
+                    actions_taken.append(f"Reset {agent.name} to ready (no work done)")
+        elif agent.status == "idle":
+            # Idle agents are fine, just display
+            console.print(f"  {status_icon} [bold]{agent.name}[/bold] [dim](idle)[/dim]")
+        elif agent.status == "done":
+            # Done agents - check if worktree still exists for potential merge
+            if worktree_exists:
+                console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done, pending merge)[/dim]")
+            else:
+                # Worktree gone but agent marked done - already merged or cleaned up
+                console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done)[/dim]")
+        elif agent.status == "stuck":
+            console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](stuck)[/dim]")
+        else:
+            console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim]({agent.status})[/dim]")
+
+    console.print()
+
+    # Warn about orphaned worktrees
+    if orphaned_worktrees:
+        print_warning("Orphaned worktrees found in agents/ (not tracked in state):")
+        for wt in orphaned_worktrees:
+            console.print(f"  [dim]{wt}[/dim]")
+        console.print("  [dim]Use 'cleanup' or remove manually[/dim]")
+        console.print()
+
+    # Display actions taken
+    if actions_taken:
+        console.print("[bold]Recovery actions:[/bold]")
+        for action in actions_taken:
+            console.print(f"  [cyan]•[/cyan] {action}")
+        console.print()
+
+    # Save reconciled state
+    save_state(state, project_root)
+
+    # Summary
+    working = len([a for a in state.agents.values() if a.status in ("ready", "working")])
+    idle = len([a for a in state.agents.values() if a.status == "idle"])
+    done = len([a for a in state.agents.values() if a.status == "done"])
+
+    if working:
+        console.print(f"[green]Ready to resume[/green]: {working} working, {idle} idle, {done} done")
+        print_info("Use 'run' to continue")
+    elif idle:
+        console.print(f"[blue]Session restored[/blue]: {idle} idle agents ready for work")
+        print_info("Use 'run' to auto-assign tasks")
+    else:
+        console.print(f"[blue]Session restored[/blue]: {len(state.agents)} agent(s)")
+
+    console.print()
+    return True
+
+
 def main() -> None:
     """Main entry point."""
     project_root = Path.cwd()
@@ -1023,6 +1169,9 @@ def main() -> None:
 
     # Print banner
     print_banner()
+
+    # Recover prior session if any
+    recover_session(state, project_root)
 
     # REPL loop
     while True:

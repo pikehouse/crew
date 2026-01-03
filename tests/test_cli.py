@@ -18,6 +18,7 @@ from crew.cli import (
     handle_command,
     get_prompt,
     _next_worker_name,
+    recover_session,
 )
 
 
@@ -806,3 +807,325 @@ class TestQueueCommandRegistration:
         """Test 'exit' still works for exiting."""
         result = handle_command("exit", empty_state, project_root)
         assert result is False
+
+
+class TestRecoverSession:
+    """Test the recover_session function for session recovery on startup."""
+
+    def test_recover_session_empty_state(self, project_root: Path, empty_state: State):
+        """Test recover_session returns False for empty state."""
+        result = recover_session(empty_state, project_root)
+        assert result is False
+
+    def test_recover_session_with_agents_returns_true(self, project_root: Path, capsys):
+        """Test recover_session returns True when agents exist."""
+        state = State()
+        agent = Agent(
+            name="test-agent",
+            session="sess-test",
+            worktree=None,
+            branch="",
+            task=None,
+            status="idle",
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = []
+            result = recover_session(state, project_root)
+
+        assert result is True
+
+    def test_recover_session_displays_agents(self, project_root: Path, capsys):
+        """Test recover_session displays agent status."""
+        state = State()
+        agent = Agent(
+            name="display-agent",
+            session="sess-display",
+            worktree=None,
+            branch="",
+            task=None,
+            status="idle",
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = []
+            recover_session(state, project_root)
+
+        captured = capsys.readouterr()
+        assert "display-agent" in captured.out
+        assert "idle" in captured.out
+
+    def test_recover_session_resets_working_agent_with_missing_worktree(
+        self, project_root: Path, capsys
+    ):
+        """Test recover_session resets working agents with missing worktree to idle."""
+        state = State()
+        agent = Agent(
+            name="missing-wt-agent",
+            session="sess-missing",
+            worktree=Path("/nonexistent/path"),
+            branch="agent/missing-wt-agent",
+            task="some-task",
+            status="working",
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = []
+            recover_session(state, project_root)
+
+        # Agent should be reset to idle
+        assert agent.status == "idle"
+        assert agent.worktree is None
+        assert agent.task is None
+        assert agent.branch == ""
+        assert agent.step_count == 0
+
+        captured = capsys.readouterr()
+        assert "Reset missing-wt-agent to idle" in captured.out
+        assert "worktree missing" in captured.out
+
+    def test_recover_session_reconciles_working_agent_with_worktree(
+        self, project_root: Path, temp_dir: Path, capsys
+    ):
+        """Test recover_session reconciles working agents with existing worktree."""
+        # Create a fake worktree directory
+        worktree_path = temp_dir / "agents" / "test-wt"
+        worktree_path.mkdir(parents=True)
+
+        state = State()
+        agent = Agent(
+            name="working-agent",
+            session="sess-working",
+            worktree=worktree_path,
+            branch="agent/working-agent",
+            task="some-task",
+            status="working",
+            step_count=3,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = [{"path": str(worktree_path)}]
+            with patch("crew.cli.shutdown_agent") as mock_shutdown:
+                mock_shutdown.return_value = "partial"
+                recover_session(state, temp_dir)
+
+        # shutdown_agent should have been called
+        mock_shutdown.assert_called_once()
+        captured = capsys.readouterr()
+        assert "partial work" in captured.out
+
+    def test_recover_session_warns_orphaned_worktrees(self, temp_dir: Path, capsys):
+        """Test recover_session warns about orphaned worktrees."""
+        # Create orphaned worktree (exists on disk but not in state)
+        orphan_dir = temp_dir / "agents" / "orphan"
+        orphan_dir.mkdir(parents=True)
+
+        # Create .crew dir
+        (temp_dir / ".crew").mkdir(parents=True)
+
+        state = State()
+        # Add an idle agent (no worktree)
+        agent = Agent(
+            name="idle-agent",
+            session="",
+            worktree=None,
+            branch="",
+            task=None,
+            status="idle",
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = []
+            recover_session(state, temp_dir)
+
+        captured = capsys.readouterr()
+        assert "Orphaned worktrees" in captured.out
+        # Check the path is in output (may be split by console wrapping)
+        assert "agents" in captured.out and "orphan" in captured.out
+
+    def test_recover_session_shows_done_agents(self, project_root: Path, capsys):
+        """Test recover_session displays done agents correctly."""
+        state = State()
+        agent = Agent(
+            name="done-agent",
+            session="sess-done",
+            worktree=None,
+            branch="agent/done-agent",
+            task="completed-task",
+            status="done",
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = []
+            recover_session(state, project_root)
+
+        captured = capsys.readouterr()
+        assert "done-agent" in captured.out
+        assert "completed-task" in captured.out
+
+    def test_recover_session_shows_stuck_agents(self, project_root: Path, capsys):
+        """Test recover_session displays stuck agents correctly."""
+        state = State()
+        agent = Agent(
+            name="stuck-agent",
+            session="sess-stuck",
+            worktree=None,
+            branch="agent/stuck-agent",
+            task="stuck-task",
+            status="stuck",
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = []
+            recover_session(state, project_root)
+
+        captured = capsys.readouterr()
+        assert "stuck-agent" in captured.out
+        assert "stuck" in captured.out
+
+    def test_recover_session_saves_state(self, project_root: Path):
+        """Test recover_session saves state after reconciliation."""
+        state = State()
+        agent = Agent(
+            name="save-test",
+            session="",
+            worktree=None,
+            branch="",
+            task=None,
+            status="idle",
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = []
+            with patch("crew.cli.save_state") as mock_save:
+                recover_session(state, project_root)
+                mock_save.assert_called_once_with(state, project_root)
+
+    def test_recover_session_shows_summary_working(self, project_root: Path, temp_dir: Path, capsys):
+        """Test recover_session shows correct summary for working agents."""
+        worktree_path = temp_dir / "agents" / "test-wt"
+        worktree_path.mkdir(parents=True)
+
+        state = State()
+        agent = Agent(
+            name="working-sum",
+            session="sess-sum",
+            worktree=worktree_path,
+            branch="agent/working-sum",
+            task="task-sum",
+            status="working",
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = [{"path": str(worktree_path)}]
+            with patch("crew.cli.shutdown_agent") as mock_shutdown:
+                mock_shutdown.return_value = "partial"
+                recover_session(state, temp_dir)
+
+        captured = capsys.readouterr()
+        assert "Ready to resume" in captured.out or "run" in captured.out
+
+    def test_recover_session_shows_summary_idle(self, project_root: Path, capsys):
+        """Test recover_session shows correct summary for idle agents."""
+        state = State()
+        agent = Agent(
+            name="idle-sum",
+            session="",
+            worktree=None,
+            branch="",
+            task=None,
+            status="idle",
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = []
+            recover_session(state, project_root)
+
+        captured = capsys.readouterr()
+        assert "Session restored" in captured.out or "idle" in captured.out
+
+    def test_recover_session_handles_worktree_list_error(self, project_root: Path, capsys):
+        """Test recover_session handles errors when listing worktrees."""
+        state = State()
+        agent = Agent(
+            name="error-test",
+            session="",
+            worktree=None,
+            branch="",
+            task=None,
+            status="idle",
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.side_effect = Exception("Git error")
+            # Should not crash
+            result = recover_session(state, project_root)
+
+        assert result is True
+        captured = capsys.readouterr()
+        assert "Could not list worktrees" in captured.out
+
+    def test_recover_session_marks_done_from_logs(self, temp_dir: Path, capsys):
+        """Test recover_session marks agent as done when DONE found in logs."""
+        worktree_path = temp_dir / "agents" / "done-logs"
+        worktree_path.mkdir(parents=True)
+        (temp_dir / ".crew").mkdir(parents=True)
+
+        state = State()
+        agent = Agent(
+            name="done-logs-agent",
+            session="sess-done-logs",
+            worktree=worktree_path,
+            branch="agent/done-logs-agent",
+            task="task-done",
+            status="working",
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = [{"path": str(worktree_path)}]
+            with patch("crew.cli.shutdown_agent") as mock_shutdown:
+                mock_shutdown.return_value = "done"
+                recover_session(state, temp_dir)
+
+        captured = capsys.readouterr()
+        assert "Marked done-logs-agent as done" in captured.out
+
+    def test_recover_session_resets_ready_with_missing_worktree(
+        self, project_root: Path, capsys
+    ):
+        """Test recover_session resets ready agents with missing worktree to idle."""
+        state = State()
+        agent = Agent(
+            name="ready-missing",
+            session="sess-ready",
+            worktree=Path("/nonexistent/ready"),
+            branch="agent/ready-missing",
+            task="ready-task",
+            status="ready",
+            step_count=0,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = []
+            recover_session(state, project_root)
+
+        # Agent should be reset to idle
+        assert agent.status == "idle"
+        assert agent.worktree is None
+
+        captured = capsys.readouterr()
+        assert "Reset ready-missing to idle" in captured.out
