@@ -869,6 +869,7 @@ def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
     """Show dashboard with runner status, costs, and agent table."""
     global _runner
     from rich.table import Table
+    from rich.panel import Panel
     from rich.text import Text
 
     # Print any pending events first
@@ -925,6 +926,31 @@ def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
             )
 
         console.print(table)
+
+        # Log tail panels for working agents
+        working_agents = [a for a in state.agents.values() if a.status in ("ready", "working")]
+        if working_agents:
+            console.print()
+            colors = ["cyan", "green", "yellow", "magenta", "blue", "red"]
+            for i, agent in enumerate(working_agents):
+                color = colors[i % len(colors)]
+                content = read_log_tail(agent.name, lines=5, project_root=project_root)
+                if content:
+                    # Truncate long lines for display
+                    lines = content.split("\n")
+                    truncated = "\n".join(
+                        line[:100] + "..." if len(line) > 100 else line
+                        for line in lines[-5:]
+                    )
+                    header = f"● {agent.name}"
+                    if agent.task:
+                        header += f" → {agent.task}"
+                    console.print(Panel(
+                        truncated,
+                        title=f"[bold {color}]{header}[/bold {color}]",
+                        border_style=color,
+                        padding=(0, 1),
+                    ))
     else:
         console.print("[dim]No agents.[/dim]")
 
