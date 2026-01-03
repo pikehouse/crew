@@ -9,8 +9,11 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import os
+import signal
+
 from crew.agent import Agent
-from crew.crew_logging import write_log
+from crew.crew_logging import write_log, read_latest_log
 from crew.git import create_worktree, remove_worktree, merge_branch, delete_branch, run_git
 from crew.state import State, save_state
 
@@ -531,6 +534,150 @@ def cleanup_agent(
     # Remove from state
     state.remove_agent(agent.name)
     save_state(state, project_root)
+
+
+def find_claude_process(agent: Agent) -> int | None:
+    """Find Claude process for an agent by session ID or worktree path.
+
+    Returns:
+        Process ID if found, None otherwise.
+    """
+    try:
+        # Get all running processes with full command line
+        result = subprocess.run(
+            ["ps", "-eo", "pid,command"],
+            capture_output=True,
+            text=True,
+        )
+
+        for line in result.stdout.strip().split("\n")[1:]:  # Skip header
+            if "claude" not in line.lower():
+                continue
+            if "--print" not in line:
+                continue
+
+            parts = line.strip().split(None, 1)
+            if len(parts) < 2:
+                continue
+
+            pid_str, cmd = parts
+
+            # Match by session ID
+            if agent.session and agent.session in cmd:
+                return int(pid_str)
+
+            # Match by worktree path
+            if agent.worktree and str(agent.worktree) in cmd:
+                return int(pid_str)
+
+        return None
+    except Exception:
+        return None
+
+
+def kill_claude_process(agent: Agent) -> bool:
+    """Kill the Claude process for an agent.
+
+    Returns:
+        True if process was found and killed, False otherwise.
+    """
+    pid = find_claude_process(agent)
+    if pid is None:
+        return False
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except ProcessLookupError:
+        # Process already gone
+        return False
+    except PermissionError:
+        return False
+
+
+def check_work_completed(agent: Agent, project_root: Path | None = None) -> str:
+    """Check if agent's work was completed by parsing logs.
+
+    Returns:
+        "done" - DONE marker found in logs (work completed)
+        "partial" - Some steps taken but not completed
+        "nothing" - No work done (no logs or empty logs)
+    """
+    project_root = project_root or Path.cwd()
+
+    # Read the latest log
+    log_content = read_latest_log(agent.name, project_root)
+
+    if not log_content:
+        return "nothing"
+
+    # Check if DONE is in the log output
+    # Extract the output section (between --- and === END ===)
+    parts = log_content.split("---\n", 1)
+    if len(parts) < 2:
+        output = log_content
+    else:
+        output = parts[1].rsplit("=== END ===", 1)[0]
+
+    if is_done(output):
+        return "done"
+
+    # If there's meaningful output, consider it partial work
+    if agent.step_count > 0:
+        return "partial"
+
+    return "nothing"
+
+
+def shutdown_agent(
+    agent: Agent,
+    state: State,
+    project_root: Path | None = None,
+) -> str:
+    """Shutdown an agent gracefully, reconciling its state.
+
+    This function:
+    1. Finds and kills the Claude process by session ID or worktree path
+    2. Checks if work was completed (parses logs for DONE)
+    3. Reconciles state based on work status:
+       - done: Set status to "done" (ready for merge)
+       - partial: Keep status as "working" (can resume later)
+       - nothing: Reset to "ready" (start fresh)
+    4. Saves state
+
+    Args:
+        agent: The agent to shutdown
+        state: Current state
+        project_root: Project root path
+
+    Returns:
+        Work completion status: "done", "partial", or "nothing"
+    """
+    project_root = project_root or Path.cwd()
+
+    # Step 1: Kill the Claude process
+    process_killed = kill_claude_process(agent)
+
+    # Step 2: Check work completion status
+    work_status = check_work_completed(agent, project_root)
+
+    # Step 3: Reconcile state based on work status
+    if work_status == "done":
+        # Work completed - mark as done (ready for merge via complete_task)
+        agent.status = "done"
+    elif work_status == "partial":
+        # Partial work - keep in working state so it can be resumed
+        # Status remains "working" (or set to working if it was something else)
+        if agent.status not in ("done", "stuck"):
+            agent.status = "working"
+    else:
+        # No work done - reset to ready state
+        agent.status = "ready"
+
+    # Step 4: Save state
+    save_state(state, project_root)
+
+    return work_status
 
 
 async def step_agent_async(
