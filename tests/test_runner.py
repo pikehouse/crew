@@ -818,6 +818,38 @@ class TestKillClaudeProcess:
 
         assert result is False
 
+    def test_kill_process_permission_error(self):
+        """kill_claude_process returns False on PermissionError."""
+        agent = Agent(
+            name="test",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+        )
+
+        with patch("crew.runner.find_claude_process", return_value=1234):
+            with patch("os.kill", side_effect=PermissionError):
+                result = kill_claude_process(agent)
+
+        assert result is False
+
+    def test_kill_process_uses_sigterm(self):
+        """kill_claude_process sends SIGTERM signal."""
+        import signal
+
+        agent = Agent(
+            name="test",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+        )
+
+        with patch("crew.runner.find_claude_process", return_value=1234):
+            with patch("os.kill") as mock_kill:
+                kill_claude_process(agent)
+
+        mock_kill.assert_called_once_with(1234, signal.SIGTERM)
+
 
 class TestCheckWorkCompleted:
     """Tests for check_work_completed function."""
@@ -888,6 +920,110 @@ Still working on this...
             result = check_work_completed(agent, project_root)
 
         assert result == "nothing"
+
+    def test_returns_nothing_when_empty_logs(self, project_root: Path):
+        """check_work_completed returns 'nothing' when log content is empty."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            step_count=0,
+        )
+
+        with patch("crew.runner.read_latest_log", return_value=""):
+            result = check_work_completed(agent, project_root)
+
+        assert result == "nothing"
+
+    def test_returns_nothing_when_zero_steps(self, project_root: Path):
+        """check_work_completed returns 'nothing' when step_count is 0 without DONE."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            step_count=0,
+        )
+
+        log_content = """=== CREW LOG ===
+Agent: test-agent
+---
+Some output but no DONE marker
+=== END ===
+"""
+        with patch("crew.runner.read_latest_log", return_value=log_content):
+            result = check_work_completed(agent, project_root)
+
+        assert result == "nothing"
+
+    def test_detects_done_in_output_section(self, project_root: Path):
+        """check_work_completed correctly parses DONE from output section."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            step_count=3,
+        )
+
+        # DONE appears after the --- separator (in output section)
+        log_content = """=== CREW LOG ===
+Agent: test-agent
+Time: 2026-01-01T12:00:00
+Step: 3
+Prompt: Continue
+Session: test-session
+---
+Finished the implementation.
+
+DONE
+=== END ===
+"""
+        with patch("crew.runner.read_latest_log", return_value=log_content):
+            result = check_work_completed(agent, project_root)
+
+        assert result == "done"
+
+    def test_done_case_insensitive_in_logs(self, project_root: Path):
+        """check_work_completed detects DONE in any case."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            step_count=2,
+        )
+
+        log_content = """=== CREW LOG ===
+---
+done
+=== END ===
+"""
+        with patch("crew.runner.read_latest_log", return_value=log_content):
+            result = check_work_completed(agent, project_root)
+
+        assert result == "done"
+
+    def test_embedded_done_not_detected(self, project_root: Path):
+        """check_work_completed does not detect DONE embedded in other words."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            step_count=2,
+        )
+
+        log_content = """=== CREW LOG ===
+---
+UNDONE task and more work to do
+=== END ===
+"""
+        with patch("crew.runner.read_latest_log", return_value=log_content):
+            result = check_work_completed(agent, project_root)
+
+        assert result == "partial"
 
 
 class TestShutdownAgent:
@@ -1016,3 +1152,154 @@ class TestShutdownAgent:
         assert result == "partial"
         # stuck status should be preserved
         assert agent.status == "stuck"
+
+    def test_shutdown_does_not_change_done_status_on_partial(self, project_root: Path):
+        """shutdown_agent preserves 'done' status even if log shows partial."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="done",
+            step_count=8,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        with patch("crew.runner.kill_claude_process", return_value=True):
+            with patch("crew.runner.check_work_completed", return_value="partial"):
+                result = shutdown_agent(agent, state, project_root)
+
+        assert result == "partial"
+        # done status should be preserved
+        assert agent.status == "done"
+
+    def test_shutdown_transitions_ready_to_working_on_partial(self, project_root: Path):
+        """shutdown_agent transitions 'ready' to 'working' on partial work."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="ready",
+            step_count=1,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        with patch("crew.runner.kill_claude_process", return_value=True):
+            with patch("crew.runner.check_work_completed", return_value="partial"):
+                result = shutdown_agent(agent, state, project_root)
+
+        assert result == "partial"
+        assert agent.status == "working"
+
+    def test_shutdown_transitions_idle_to_working_on_partial(self, project_root: Path):
+        """shutdown_agent transitions 'idle' to 'working' on partial work."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="idle",
+            step_count=2,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        with patch("crew.runner.kill_claude_process", return_value=True):
+            with patch("crew.runner.check_work_completed", return_value="partial"):
+                result = shutdown_agent(agent, state, project_root)
+
+        assert result == "partial"
+        assert agent.status == "working"
+
+    def test_shutdown_calls_kill_before_check_work(self, project_root: Path):
+        """shutdown_agent kills process before checking work status."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="working",
+            step_count=3,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        call_order = []
+
+        def mock_kill(a):
+            call_order.append("kill")
+            return True
+
+        def mock_check(a, p):
+            call_order.append("check")
+            return "partial"
+
+        with patch("crew.runner.kill_claude_process", side_effect=mock_kill):
+            with patch("crew.runner.check_work_completed", side_effect=mock_check):
+                shutdown_agent(agent, state, project_root)
+
+        assert call_order == ["kill", "check"]
+
+    def test_shutdown_returns_work_status(self, project_root: Path):
+        """shutdown_agent returns the work completion status."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="working",
+            step_count=5,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        for expected_status in ["done", "partial", "nothing"]:
+            agent.status = "working"  # Reset for each test
+            with patch("crew.runner.kill_claude_process", return_value=True):
+                with patch("crew.runner.check_work_completed", return_value=expected_status):
+                    result = shutdown_agent(agent, state, project_root)
+
+            assert result == expected_status
+
+    def test_shutdown_uses_project_root_for_state(self, project_root: Path):
+        """shutdown_agent uses project_root for saving state."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="working",
+            step_count=5,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        with patch("crew.runner.kill_claude_process", return_value=True):
+            with patch("crew.runner.check_work_completed", return_value="done"):
+                shutdown_agent(agent, state, project_root)
+
+        # Verify state was saved to project_root
+        loaded_state = load_state(project_root)
+        assert loaded_state.get_agent("test-agent") is not None
+
+    def test_shutdown_uses_project_root_for_check_work(self, project_root: Path):
+        """shutdown_agent passes project_root to check_work_completed."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="working",
+            step_count=5,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        with patch("crew.runner.kill_claude_process", return_value=True):
+            with patch("crew.runner.check_work_completed", return_value="done") as mock_check:
+                shutdown_agent(agent, state, project_root)
+
+        mock_check.assert_called_once_with(agent, project_root)
