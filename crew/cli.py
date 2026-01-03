@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import subprocess
 import sys
 import threading
@@ -60,6 +61,8 @@ class BackgroundRunner:
         self._stepping: set = set()
         # Lock for thread-safe operations
         self._lock = threading.Lock()
+        # Store executor reference for clean shutdown
+        self._executor = None
 
     def start(self):
         """Start the background runner."""
@@ -72,10 +75,20 @@ class BackgroundRunner:
         return True
 
     def stop(self):
-        """Stop the background runner."""
+        """Stop the background runner gracefully."""
         self.running = False
+
+        # Shutdown the executor without waiting for pending tasks
+        if self._executor:
+            try:
+                self._executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                # Python < 3.9 doesn't have cancel_futures
+                self._executor.shutdown(wait=False)
+            self._executor = None
+
         if self.thread:
-            self.thread.join(timeout=1)
+            self.thread.join(timeout=2)
             self.thread = None
 
     def _get_idle_agents(self) -> list:
@@ -139,7 +152,8 @@ class BackgroundRunner:
         import time
         from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        self._executor = ThreadPoolExecutor(max_workers=10)
+        try:
             while self.running:
                 # First, try to assign work to idle agents
                 self._assign_work()
@@ -155,7 +169,8 @@ class BackgroundRunner:
 
                     # Submit all to thread pool (non-blocking)
                     for agent in to_step:
-                        executor.submit(self._step_one_agent, agent)
+                        if self.running:  # Check before submitting
+                            self._executor.submit(self._step_one_agent, agent)
 
                 # Check if anyone is still working or idle
                 all_agents = list(self.state.agents.values())
@@ -171,6 +186,15 @@ class BackgroundRunner:
 
                 # Brief pause before next poll
                 time.sleep(1)
+        finally:
+            # Clean up the executor
+            if self._executor:
+                try:
+                    self._executor.shutdown(wait=False, cancel_futures=True)
+                except TypeError:
+                    # Python < 3.9 doesn't have cancel_futures
+                    self._executor.shutdown(wait=False)
+                self._executor = None
 
     def drain_events(self) -> list[RunnerEvent]:
         """Get all pending events."""
@@ -193,11 +217,69 @@ _runner: BackgroundRunner | None = None
 # Global read-only mode flag
 _read_only_mode: bool = False
 
+# Global state and project root for signal handlers
+_state = None
+_project_root: Path | None = None
+
+# Flag to track if we're already shutting down (prevent re-entry)
+_shutting_down: bool = False
+
 # Commands that modify state and are blocked in read-only mode
 _MODIFYING_COMMANDS = frozenset({
     "spawn", "run", "work", "stop", "kill", "cleanup", "merge",
     "reset", "new", "dep", "assign"
 })
+
+
+def graceful_shutdown(signum: int | None = None, frame=None) -> None:
+    """Handle graceful shutdown on SIGINT/SIGTERM.
+
+    Stops the runner, shuts down working agents, saves state,
+    cleans up PID file, and exits without traceback.
+    """
+    global _runner, _state, _project_root, _read_only_mode, _shutting_down
+
+    # Prevent re-entry if already shutting down
+    if _shutting_down:
+        return
+    _shutting_down = True
+
+    # Suppress KeyboardInterrupt traceback
+    try:
+        # Stop the runner if running
+        if _runner and _runner.is_running:
+            _runner.stop()
+
+        # Shutdown working agents and save state
+        if _state and _project_root:
+            for agent in list(_state.agents.values()):
+                if agent.status in ("ready", "working"):
+                    try:
+                        shutdown_agent(agent, _state, _project_root)
+                    except Exception:
+                        pass  # Best effort on shutdown
+
+            # Save state
+            try:
+                save_state(_state, _project_root)
+            except Exception:
+                pass  # Best effort
+
+        # Clean up PID file
+        if not _read_only_mode and _project_root:
+            try:
+                remove_pid_file(_project_root)
+            except Exception:
+                pass  # Best effort
+
+        # Print a clean exit message
+        console.print("\n[dim]interrupted, bye[/dim]")
+
+    except Exception:
+        pass  # Suppress any errors during shutdown
+
+    # Exit cleanly without traceback
+    sys.exit(0)
 
 
 def get_prompt(state) -> str:
@@ -1423,9 +1505,10 @@ def recover_session(state, project_root: Path) -> bool:
 
 def main() -> None:
     """Main entry point."""
-    global _read_only_mode
+    global _read_only_mode, _state, _project_root, _runner, _shutting_down
 
     project_root = Path.cwd()
+    _project_root = project_root
 
     # Ensure .crew directory exists
     ensure_crew_dir(project_root)
@@ -1439,6 +1522,12 @@ def main() -> None:
 
     # Load state
     state = load_state(project_root)
+    _state = state
+
+    # Register signal handlers for graceful shutdown
+    # SIGINT = Ctrl-C, SIGTERM = kill command
+    signal.signal(signal.SIGINT, graceful_shutdown)
+    signal.signal(signal.SIGTERM, graceful_shutdown)
 
     # Set up prompt session with history
     history_file = project_root / ".crew" / "history"
@@ -1463,8 +1552,11 @@ def main() -> None:
             if not handle_command(line, state, project_root):
                 break
         except KeyboardInterrupt:
-            # On Ctrl-C, stop the runner if running
-            global _runner
+            # Signal handler takes care of graceful shutdown
+            # This exception may still be raised by prompt_toolkit
+            if _shutting_down:
+                break
+            # If not shutting down, just stop the runner and continue
             if _runner and _runner.is_running:
                 _runner.stop()
                 print_runner_events()
@@ -1473,9 +1565,22 @@ def main() -> None:
         except EOFError:
             break
 
+    # Mark that we're shutting down to prevent signal handler re-entry
+    _shutting_down = True
+
     # Stop runner on exit
     if _runner and _runner.is_running:
         _runner.stop()
+
+    # Shutdown working agents and save state
+    for agent in list(state.agents.values()):
+        if agent.status in ("ready", "working"):
+            try:
+                shutdown_agent(agent, state, project_root)
+            except Exception:
+                pass  # Best effort on shutdown
+
+    save_state(state, project_root)
 
     # Clean up PID file on exit (only if we're not in read-only mode)
     if not _read_only_mode:
