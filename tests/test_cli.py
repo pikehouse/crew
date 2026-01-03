@@ -911,9 +911,12 @@ class TestRecoverSession:
 
         with patch("crew.cli.get_worktree_list") as mock_worktrees:
             mock_worktrees.return_value = [{"path": str(worktree_path)}]
-            with patch("crew.cli.shutdown_agent") as mock_shutdown:
-                mock_shutdown.return_value = "partial"
-                recover_session(state, temp_dir)
+            with patch("crew.cli.has_uncommitted_changes") as mock_dirty:
+                mock_dirty.return_value = False  # Clean worktree
+                with patch("crew.cli.shutdown_agent") as mock_shutdown:
+                    mock_shutdown.return_value = "partial"
+                    with patch("crew.cli.remove_worktree"):
+                        recover_session(state, temp_dir)
 
         # shutdown_agent should have been called
         mock_shutdown.assert_called_once()
@@ -1029,12 +1032,16 @@ class TestRecoverSession:
 
         with patch("crew.cli.get_worktree_list") as mock_worktrees:
             mock_worktrees.return_value = [{"path": str(worktree_path)}]
-            with patch("crew.cli.shutdown_agent") as mock_shutdown:
-                mock_shutdown.return_value = "partial"
-                recover_session(state, temp_dir)
+            with patch("crew.cli.has_uncommitted_changes") as mock_dirty:
+                mock_dirty.return_value = False  # Clean worktree
+                with patch("crew.cli.shutdown_agent") as mock_shutdown:
+                    # Return "done" so agent stays in a working state for the summary
+                    mock_shutdown.return_value = "done"
+                    recover_session(state, temp_dir)
 
         captured = capsys.readouterr()
-        assert "Ready to resume" in captured.out or "run" in captured.out
+        # Agent marked as done should be visible (1 done agent)
+        assert "done" in captured.out.lower()
 
     def test_recover_session_shows_summary_idle(self, project_root: Path, capsys):
         """Test recover_session shows correct summary for idle agents."""
@@ -1097,12 +1104,55 @@ class TestRecoverSession:
 
         with patch("crew.cli.get_worktree_list") as mock_worktrees:
             mock_worktrees.return_value = [{"path": str(worktree_path)}]
-            with patch("crew.cli.shutdown_agent") as mock_shutdown:
-                mock_shutdown.return_value = "done"
-                recover_session(state, temp_dir)
+            with patch("crew.cli.has_uncommitted_changes") as mock_dirty:
+                mock_dirty.return_value = False  # Clean worktree
+                with patch("crew.cli.shutdown_agent") as mock_shutdown:
+                    mock_shutdown.return_value = "done"
+                    recover_session(state, temp_dir)
 
         captured = capsys.readouterr()
         assert "Marked done-logs-agent as done" in captured.out
+
+    def test_recover_session_resets_dirty_worktree_to_idle(
+        self, temp_dir: Path, capsys
+    ):
+        """Test recover_session resets agents with dirty worktree to idle."""
+        worktree_path = temp_dir / "agents" / "dirty-wt"
+        worktree_path.mkdir(parents=True)
+        (temp_dir / ".crew").mkdir(parents=True)
+
+        state = State()
+        agent = Agent(
+            name="dirty-agent",
+            session="sess-dirty",
+            worktree=worktree_path,
+            branch="agent/dirty-agent",
+            task="task-dirty",
+            status="working",
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+            mock_worktrees.return_value = [{"path": str(worktree_path)}]
+            with patch("crew.cli.has_uncommitted_changes") as mock_dirty:
+                mock_dirty.return_value = True  # Dirty worktree
+                with patch("crew.cli.remove_worktree") as mock_remove:
+                    recover_session(state, temp_dir)
+
+        # Worktree should have been removed
+        mock_remove.assert_called_once()
+        # Agent should be reset to idle
+        assert agent.status == "idle"
+        assert agent.worktree is None
+        assert agent.task is None
+        assert agent.branch == ""
+        assert agent.step_count == 0
+        # Output should mention dirty worktree
+        captured = capsys.readouterr()
+        assert "dirty worktree removed" in captured.out
+        # Check parts separately as console may wrap text
+        assert "ticket task-dirty stays" in captured.out
 
     def test_recover_session_resets_ready_with_missing_worktree(
         self, project_root: Path, capsys
