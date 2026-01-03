@@ -316,8 +316,8 @@ def cmd_run(state, args: list[str], project_root: Path) -> None:
     print_info(f"Started {len(state.active_agents)} agent(s) in background. Use 'stop' to pause.")
 
 
-def cmd_stop(state, args: list[str]) -> None:
-    """Stop the background runner."""
+def cmd_stop(state, args: list[str], project_root: Path) -> None:
+    """Stop the background runner and shutdown working agents."""
     global _runner
 
     if not _runner or not _runner.is_running:
@@ -325,7 +325,21 @@ def cmd_stop(state, args: list[str]) -> None:
         return
 
     _runner.stop()
-    print_info("Stopped. Agents retain state. Use 'run' to resume.")
+
+    # Shutdown each working agent and track results
+    paused_count = 0
+    completed_count = 0
+
+    for agent in list(state.agents.values()):
+        if agent.status in ("ready", "working"):
+            status = shutdown_agent(agent, state, project_root)
+            if status == "done":
+                completed_count += 1
+            elif status == "partial":
+                paused_count += 1
+            # "nothing" status doesn't count as paused or completed
+
+    print_info(f"Stopped. {paused_count} agents paused mid-work, {completed_count} completed.")
 
 
 def cmd_reset(state, args: list[str], project_root: Path) -> None:
@@ -1050,7 +1064,7 @@ def handle_command(line: str, state, project_root: Path) -> bool:
     elif cmd == "run":
         cmd_run(state, args, project_root)
     elif cmd == "stop":
-        cmd_stop(state, args)
+        cmd_stop(state, args, project_root)
     elif cmd == "ps":
         cmd_ps(state, args)
     elif cmd == "peek":
