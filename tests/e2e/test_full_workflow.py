@@ -724,3 +724,318 @@ class TestIsDoneFunction:
         """No DONE returns False."""
         assert is_done("Still working") is False
         assert is_done("") is False
+
+
+class TestTicketCloseCommittedWithMerge:
+    """E2E tests verifying ticket close is committed as part of merge flow.
+
+    When complete_task() runs, tk close modifies .tickets/<id>.md.
+    These tests ensure this change is properly committed as part of the
+    merge flow, not left as uncommitted changes in main.
+    """
+
+    def test_ticket_close_is_committed_after_merge(self, sample_project: Path):
+        """Test that ticket close change is committed after agent merge.
+
+        After complete_task() merges an agent's work:
+        1. The ticket file should show status=closed
+        2. The change should be committed (not dirty/uncommitted)
+        """
+        state = State()
+
+        # Create agent and set up as if it completed work
+        agent = spawn_worker("close-commit-worker", state, project_root=sample_project)
+
+        # Create a real branch for the agent with actual commits
+        branch_name = "agent/close-commit-worker-t-0002"
+        subprocess.run(
+            ["git", "checkout", "-b", branch_name],
+            cwd=sample_project,
+            capture_output=True,
+            check=True,
+        )
+
+        # Make a commit on the agent branch (simulating agent work)
+        test_file = sample_project / "agent_work.txt"
+        test_file.write_text("Work done by agent")
+        subprocess.run(
+            ["git", "add", "agent_work.txt"],
+            cwd=sample_project,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Agent work commit"],
+            cwd=sample_project,
+            capture_output=True,
+            check=True,
+        )
+
+        # Switch back to main so we can set up the worktree mock
+        subprocess.run(
+            ["git", "checkout", "main"],
+            cwd=sample_project,
+            capture_output=True,
+            check=True,
+        )
+
+        # Set up agent state as "done"
+        agent.status = "done"
+        agent.task = "t-0002"
+        agent.session = "close-commit-session"
+        agent.worktree = sample_project / "agents" / "close-commit-worker-t-0002"
+        agent.branch = branch_name
+
+        # Create a mock close_ticket that simulates tk close behavior
+        # by directly modifying the ticket file to set status=closed
+        def mock_close_ticket(task_id: str) -> None:
+            ticket_path = sample_project / ".tickets" / f"{task_id}.md"
+            if ticket_path.exists():
+                content = ticket_path.read_text()
+                # Replace status: open with status: closed
+                content = content.replace("status: open", "status: closed")
+                ticket_path.write_text(content)
+
+        # Run complete_task with mocked components
+        with patch("crew.runner.close_ticket", side_effect=mock_close_ticket), \
+             patch("crew.runner.remove_worktree"), \
+             patch("crew.runner.run_tests_in_worktree", return_value=(True, None)):
+
+            complete_task(agent, state, project_root=sample_project)
+
+        # Verify 1: Ticket file shows status=closed
+        ticket_path = sample_project / ".tickets" / "t-0002.md"
+        ticket_content = ticket_path.read_text()
+        assert "status: closed" in ticket_content, \
+            f"Ticket should show status: closed, got:\n{ticket_content}"
+
+        # Verify 2: Git status should be clean for tracked files (no uncommitted changes)
+        # Note: .crew/ is untracked and expected (it's state data)
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=sample_project,
+            capture_output=True,
+            text=True,
+        )
+
+        # Filter out untracked files (lines starting with ??)
+        uncommitted_changes = [
+            line for line in result.stdout.strip().split("\n")
+            if line and not line.startswith("??")
+        ]
+        assert uncommitted_changes == [], \
+            f"Ticket close should be committed, but found uncommitted changes:\n{uncommitted_changes}"
+
+        # Verify 3: The ticket change should be in the commit history
+        result = subprocess.run(
+            ["git", "log", "--oneline", "-5"],
+            cwd=sample_project,
+            capture_output=True,
+            text=True,
+        )
+        # There should be a merge commit that includes the ticket close
+        assert "agent/close-commit-worker-t-0002" in result.stdout or \
+               "close-commit-worker" in result.stdout.lower(), \
+            f"Merge commit should reference the agent branch, got:\n{result.stdout}"
+
+    def test_ticket_file_shows_closed_status_in_git_log(self, sample_project: Path):
+        """Test that the ticket file with status=closed appears in git log.
+
+        This verifies the ticket modification is part of the git history,
+        not just staged or in working directory.
+        """
+        state = State()
+
+        agent = spawn_worker("log-verify-worker", state, project_root=sample_project)
+
+        # Create agent branch with commits
+        branch_name = "agent/log-verify-worker-t-0003"
+        subprocess.run(
+            ["git", "checkout", "-b", branch_name],
+            cwd=sample_project,
+            capture_output=True,
+            check=True,
+        )
+
+        # Make a commit on agent branch
+        work_file = sample_project / "log_verify_work.txt"
+        work_file.write_text("Log verify work")
+        subprocess.run(["git", "add", "."], cwd=sample_project, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Log verify agent work"],
+            cwd=sample_project,
+            capture_output=True,
+            check=True,
+        )
+
+        # Return to main
+        subprocess.run(["git", "checkout", "main"], cwd=sample_project, capture_output=True, check=True)
+
+        # Set up agent state
+        agent.status = "done"
+        agent.task = "t-0003"
+        agent.session = "log-verify-session"
+        agent.worktree = sample_project / "agents" / "log-verify-worker-t-0003"
+        agent.branch = branch_name
+
+        def mock_close_ticket(task_id: str) -> None:
+            ticket_path = sample_project / ".tickets" / f"{task_id}.md"
+            if ticket_path.exists():
+                content = ticket_path.read_text()
+                content = content.replace("status: open", "status: closed")
+                ticket_path.write_text(content)
+
+        with patch("crew.runner.close_ticket", side_effect=mock_close_ticket), \
+             patch("crew.runner.remove_worktree"), \
+             patch("crew.runner.run_tests_in_worktree", return_value=(True, None)):
+
+            complete_task(agent, state, project_root=sample_project)
+
+        # Verify that the ticket file in HEAD shows status: closed
+        # This checks the committed content, not the working directory
+        result = subprocess.run(
+            ["git", "show", "HEAD:.tickets/t-0003.md"],
+            cwd=sample_project,
+            capture_output=True,
+            text=True,
+        )
+
+        # The committed version of the ticket should show status: closed
+        assert "status: closed" in result.stdout, \
+            f"Committed ticket should show status: closed, got:\n{result.stdout}"
+
+    def test_sequential_agent_completions_preserve_ticket_closes(self, sample_project: Path):
+        """Test that sequential agent completions properly preserve all ticket closes.
+
+        When multiple agents complete sequentially, each ticket close should be
+        committed and not lost when subsequent agents merge their work.
+        """
+        state = State()
+
+        # First agent: complete and verify ticket is closed and committed
+        agent1 = spawn_worker("seq-agent-1", state, project_root=sample_project)
+
+        branch1 = "agent/seq-agent-1-t-0002"
+        subprocess.run(
+            ["git", "checkout", "-b", branch1],
+            cwd=sample_project,
+            capture_output=True,
+            check=True,
+        )
+
+        work_file1 = sample_project / "seq_agent_1_work.txt"
+        work_file1.write_text("Work by agent 1")
+        subprocess.run(["git", "add", "."], cwd=sample_project, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Agent 1 work"],
+            cwd=sample_project,
+            capture_output=True,
+            check=True,
+        )
+
+        subprocess.run(["git", "checkout", "main"], cwd=sample_project, capture_output=True, check=True)
+
+        agent1.status = "done"
+        agent1.task = "t-0002"
+        agent1.session = "seq-agent-1-session"
+        agent1.worktree = sample_project / "agents" / "seq-agent-1-t-0002"
+        agent1.branch = branch1
+
+        def mock_close_ticket_1(task_id: str) -> None:
+            ticket_path = sample_project / ".tickets" / f"{task_id}.md"
+            if ticket_path.exists():
+                content = ticket_path.read_text()
+                content = content.replace("status: open", "status: closed")
+                ticket_path.write_text(content)
+
+        with patch("crew.runner.close_ticket", side_effect=mock_close_ticket_1), \
+             patch("crew.runner.remove_worktree"), \
+             patch("crew.runner.run_tests_in_worktree", return_value=(True, None)):
+
+            complete_task(agent1, state, project_root=sample_project)
+
+        # Verify first ticket is closed and committed
+        result = subprocess.run(
+            ["git", "show", "HEAD:.tickets/t-0002.md"],
+            cwd=sample_project,
+            capture_output=True,
+            text=True,
+        )
+        assert "status: closed" in result.stdout, \
+            f"First ticket should be committed as closed, got:\n{result.stdout}"
+
+        # Second agent: complete and verify both tickets are closed and committed
+        agent2 = spawn_worker("seq-agent-2", state, project_root=sample_project)
+
+        branch2 = "agent/seq-agent-2-t-0003"
+        subprocess.run(
+            ["git", "checkout", "-b", branch2],
+            cwd=sample_project,
+            capture_output=True,
+            check=True,
+        )
+
+        work_file2 = sample_project / "seq_agent_2_work.txt"
+        work_file2.write_text("Work by agent 2")
+        subprocess.run(["git", "add", "."], cwd=sample_project, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Agent 2 work"],
+            cwd=sample_project,
+            capture_output=True,
+            check=True,
+        )
+
+        subprocess.run(["git", "checkout", "main"], cwd=sample_project, capture_output=True, check=True)
+
+        agent2.status = "done"
+        agent2.task = "t-0003"
+        agent2.session = "seq-agent-2-session"
+        agent2.worktree = sample_project / "agents" / "seq-agent-2-t-0003"
+        agent2.branch = branch2
+
+        def mock_close_ticket_2(task_id: str) -> None:
+            ticket_path = sample_project / ".tickets" / f"{task_id}.md"
+            if ticket_path.exists():
+                content = ticket_path.read_text()
+                content = content.replace("status: open", "status: closed")
+                ticket_path.write_text(content)
+
+        with patch("crew.runner.close_ticket", side_effect=mock_close_ticket_2), \
+             patch("crew.runner.remove_worktree"), \
+             patch("crew.runner.run_tests_in_worktree", return_value=(True, None)):
+
+            complete_task(agent2, state, project_root=sample_project)
+
+        # Verify second ticket is closed and committed
+        result = subprocess.run(
+            ["git", "show", "HEAD:.tickets/t-0003.md"],
+            cwd=sample_project,
+            capture_output=True,
+            text=True,
+        )
+        assert "status: closed" in result.stdout, \
+            f"Second ticket should be committed as closed, got:\n{result.stdout}"
+
+        # Verify first ticket is STILL closed (not reverted by second merge)
+        result = subprocess.run(
+            ["git", "show", "HEAD:.tickets/t-0002.md"],
+            cwd=sample_project,
+            capture_output=True,
+            text=True,
+        )
+        assert "status: closed" in result.stdout, \
+            f"First ticket should still be closed after second merge, got:\n{result.stdout}"
+
+        # Git status should be clean
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=sample_project,
+            capture_output=True,
+            text=True,
+        )
+        uncommitted_changes = [
+            line for line in result.stdout.strip().split("\n")
+            if line and not line.startswith("??")
+        ]
+        assert uncommitted_changes == [], \
+            f"All ticket closes should be committed, but found:\n{uncommitted_changes}"
