@@ -1,8 +1,9 @@
-"""Tests for crew.cli module - dashboard command and command parsing."""
+"""Tests for crew.cli module - dashboard command, queue command, and command parsing."""
 
 from __future__ import annotations
 
 import io
+import json
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -13,6 +14,7 @@ from crew.agent import Agent
 from crew.state import State
 from crew.cli import (
     cmd_dashboard,
+    cmd_queue,
     handle_command,
     get_prompt,
     _next_worker_name,
@@ -325,12 +327,14 @@ class TestCommandParsing:
         result = handle_command("quit", empty_state, project_root)
         assert result is False
 
-    def test_handle_command_q_returns_false(
+    def test_handle_command_q_runs_queue(
         self, empty_state: State, project_root: Path
     ):
-        """Test handle_command returns False for 'q' shortcut."""
-        result = handle_command("q", empty_state, project_root)
-        assert result is False
+        """Test handle_command runs queue for 'q' (now alias for queue, not quit)."""
+        with patch("crew.cli.cmd_queue") as mock_queue:
+            result = handle_command("q", empty_state, project_root)
+            assert result is True
+            mock_queue.assert_called_once()
 
     def test_handle_command_exit_returns_false(
         self, empty_state: State, project_root: Path
@@ -597,3 +601,208 @@ class TestDashboardStatusColors:
         cmd_dashboard(state, [], project_root)
         captured = capsys.readouterr()
         assert "ready" in captured.out
+
+
+class TestQueueCommand:
+    """Test the queue command for displaying dependency pipeline."""
+
+    def test_queue_no_tickets(self, empty_state: State, capsys):
+        """Test queue shows message when no tickets exist."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="[]",
+                stderr="",
+            )
+            cmd_queue(empty_state, [])
+            captured = capsys.readouterr()
+            assert "No tickets" in captured.out
+
+    def test_queue_no_open_tickets(self, empty_state: State, capsys):
+        """Test queue shows message when all tickets are closed."""
+        tickets = [
+            {"id": "c-1", "status": "closed", "deps": [], "title": "Task 1"},
+            {"id": "c-2", "status": "closed", "deps": [], "title": "Task 2"},
+        ]
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(tickets),
+                stderr="",
+            )
+            cmd_queue(empty_state, [])
+            captured = capsys.readouterr()
+            assert "No open tickets" in captured.out
+
+    def test_queue_ready_tickets(self, empty_state: State, capsys):
+        """Test queue displays ready tickets (no dependencies)."""
+        tickets = [
+            {"id": "c-1", "status": "open", "deps": [], "title": "Ready Task 1"},
+            {"id": "c-2", "status": "open", "deps": [], "title": "Ready Task 2"},
+        ]
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(tickets),
+                stderr="",
+            )
+            cmd_queue(empty_state, [])
+            captured = capsys.readouterr()
+            assert "Ready now" in captured.out
+            assert "c-1" in captured.out
+            assert "c-2" in captured.out
+            assert "Ready Task 1" in captured.out
+
+    def test_queue_next_tickets(self, empty_state: State, capsys):
+        """Test queue displays next tickets (blocked by ready tickets)."""
+        tickets = [
+            {"id": "c-1", "status": "open", "deps": [], "title": "Ready Task"},
+            {"id": "c-2", "status": "open", "deps": ["c-1"], "title": "Next Task"},
+        ]
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(tickets),
+                stderr="",
+            )
+            cmd_queue(empty_state, [])
+            captured = capsys.readouterr()
+            assert "Ready now" in captured.out
+            assert "Next" in captured.out
+            assert "c-1" in captured.out
+            assert "c-2" in captured.out
+            assert "blocked by c-1" in captured.out
+
+    def test_queue_later_tickets(self, empty_state: State, capsys):
+        """Test queue displays later tickets (multiple deps away)."""
+        tickets = [
+            {"id": "c-1", "status": "open", "deps": [], "title": "Ready Task"},
+            {"id": "c-2", "status": "open", "deps": ["c-1"], "title": "Next Task"},
+            {"id": "c-3", "status": "open", "deps": ["c-2"], "title": "Later Task"},
+        ]
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(tickets),
+                stderr="",
+            )
+            cmd_queue(empty_state, [])
+            captured = capsys.readouterr()
+            assert "Ready now" in captured.out
+            assert "Next" in captured.out
+            assert "Later" in captured.out
+            assert "c-3" in captured.out
+            assert "wave 2" in captured.out
+
+    def test_queue_blocked_tickets_cycle(self, empty_state: State, capsys):
+        """Test queue displays blocked tickets with cyclic dependencies."""
+        tickets = [
+            {"id": "c-1", "status": "open", "deps": ["c-2"], "title": "Cycle A"},
+            {"id": "c-2", "status": "open", "deps": ["c-1"], "title": "Cycle B"},
+        ]
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(tickets),
+                stderr="",
+            )
+            cmd_queue(empty_state, [])
+            captured = capsys.readouterr()
+            assert "Blocked" in captured.out
+            assert "c-1" in captured.out
+            assert "c-2" in captured.out
+
+    def test_queue_ignores_closed_deps(self, empty_state: State, capsys):
+        """Test queue ignores closed tickets as dependencies."""
+        tickets = [
+            {"id": "c-1", "status": "closed", "deps": [], "title": "Closed Task"},
+            {"id": "c-2", "status": "open", "deps": ["c-1"], "title": "Open Task"},
+        ]
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(tickets),
+                stderr="",
+            )
+            cmd_queue(empty_state, [])
+            captured = capsys.readouterr()
+            # c-2 should be ready since c-1 is closed
+            assert "Ready now" in captured.out
+            assert "c-2" in captured.out
+
+    def test_queue_shows_summary(self, empty_state: State, capsys):
+        """Test queue shows summary with counts."""
+        tickets = [
+            {"id": "c-1", "status": "open", "deps": [], "title": "Task 1"},
+            {"id": "c-2", "status": "open", "deps": ["c-1"], "title": "Task 2"},
+        ]
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(tickets),
+                stderr="",
+            )
+            cmd_queue(empty_state, [])
+            captured = capsys.readouterr()
+            assert "2 open tickets" in captured.out
+            assert "1 ready" in captured.out
+
+    def test_queue_tk_not_found(self, empty_state: State, capsys):
+        """Test queue handles tk command not found."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError()
+            cmd_queue(empty_state, [])
+            captured = capsys.readouterr()
+            assert "tk command not found" in captured.out
+
+    def test_queue_tk_error(self, empty_state: State, capsys):
+        """Test queue handles tk query error."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="Some error",
+            )
+            cmd_queue(empty_state, [])
+            captured = capsys.readouterr()
+            assert "tk query failed" in captured.out
+
+    def test_queue_invalid_json(self, empty_state: State, capsys):
+        """Test queue handles invalid JSON from tk."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="not valid json",
+                stderr="",
+            )
+            cmd_queue(empty_state, [])
+            captured = capsys.readouterr()
+            assert "Failed to parse" in captured.out
+
+
+class TestQueueCommandRegistration:
+    """Test queue command registration in handle_command."""
+
+    def test_handle_command_queue(self, empty_state: State, project_root: Path):
+        """Test handle_command accepts 'queue' command."""
+        with patch("crew.cli.cmd_queue") as mock_queue:
+            result = handle_command("queue", empty_state, project_root)
+            assert result is True
+            mock_queue.assert_called_once()
+
+    def test_handle_command_q_alias(self, empty_state: State, project_root: Path):
+        """Test handle_command accepts 'q' as queue alias."""
+        with patch("crew.cli.cmd_queue") as mock_queue:
+            result = handle_command("q", empty_state, project_root)
+            assert result is True
+            mock_queue.assert_called_once()
+
+    def test_quit_still_works(self, empty_state: State, project_root: Path):
+        """Test 'quit' still works for exiting."""
+        result = handle_command("quit", empty_state, project_root)
+        assert result is False
+
+    def test_exit_still_works(self, empty_state: State, project_root: Path):
+        """Test 'exit' still works for exiting."""
+        result = handle_command("exit", empty_state, project_root)
+        assert result is False

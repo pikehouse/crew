@@ -698,6 +698,166 @@ def cmd_assign(state, args: list[str], project_root: Path) -> None:
     print_info(f"Assigned {task_id} to {name}")
 
 
+def cmd_queue(state, args: list[str]) -> None:
+    """Show full tk dependency pipeline with scheduling waves.
+
+    Displays tickets organized into waves based on dependencies:
+    - Ready now: No unresolved dependencies, can start immediately
+    - Next: Grouped by what blocks them (will be ready when blocker completes)
+    - Later: Multiple levels of dependencies away
+    - Blocked: Has dependencies that are themselves blocked or stuck
+    """
+    import json
+    from collections import defaultdict
+
+    # Get all tickets as JSON from tk query
+    try:
+        result = subprocess.run(
+            ["tk", "query", "--json"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print_error(f"tk query failed: {result.stderr}")
+            return
+        tickets_data = json.loads(result.stdout) if result.stdout.strip() else []
+    except FileNotFoundError:
+        print_error("tk command not found. Is ticket installed?")
+        return
+    except json.JSONDecodeError as e:
+        print_error(f"Failed to parse tk query output: {e}")
+        return
+
+    if not tickets_data:
+        console.print("[dim]No tickets in queue.[/dim]")
+        return
+
+    # Build ticket lookup and dependency graph
+    tickets = {}  # id -> ticket data
+    for t in tickets_data:
+        tid = t.get("id", "")
+        if tid:
+            tickets[tid] = t
+
+    # Only consider open tickets
+    open_tickets = {tid: t for tid, t in tickets.items() if t.get("status") == "open"}
+
+    if not open_tickets:
+        console.print("[dim]No open tickets in queue.[/dim]")
+        return
+
+    # Build reverse dependency map: blocker_id -> list of tickets blocked by it
+    blocked_by = defaultdict(list)  # blocker_id -> [tickets waiting on it]
+    for tid, t in open_tickets.items():
+        deps = t.get("deps", [])
+        for dep_id in deps:
+            if dep_id in open_tickets:  # Only count open deps as blocking
+                blocked_by[dep_id].append(tid)
+
+    # Compute waves using topological sort (Kahn's algorithm)
+    # Wave 0 = ready now (no open deps)
+    # Wave N = tickets whose deps are all in waves < N
+    waves = {}  # ticket_id -> wave_number
+    remaining = set(open_tickets.keys())
+
+    wave_num = 0
+    while remaining:
+        # Find tickets with no unresolved open dependencies
+        ready_this_wave = []
+        for tid in remaining:
+            deps = open_tickets[tid].get("deps", [])
+            # A ticket is ready if all its deps are either closed or in previous waves
+            open_deps = [d for d in deps if d in open_tickets and d not in waves]
+            if not open_deps:
+                ready_this_wave.append(tid)
+
+        if not ready_this_wave:
+            # Remaining tickets are in a cycle - mark as blocked
+            for tid in remaining:
+                waves[tid] = -1  # -1 indicates blocked/cyclic
+            break
+
+        for tid in ready_this_wave:
+            waves[tid] = wave_num
+            remaining.discard(tid)
+
+        wave_num += 1
+
+    # Group tickets by wave
+    wave_tickets = defaultdict(list)
+    for tid, wave in waves.items():
+        wave_tickets[wave].append(tid)
+
+    # Display results
+    from rich.table import Table
+
+    # Ready now (wave 0)
+    if 0 in wave_tickets:
+        console.print("[bold green]Ready now[/bold green]")
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("ID", style="cyan")
+        table.add_column("Title")
+        for tid in sorted(wave_tickets[0]):
+            t = open_tickets[tid]
+            # Extract title from ticket (first line of body after frontmatter)
+            title = t.get("title", tid)
+            table.add_row(tid, title)
+        console.print(table)
+        console.print()
+
+    # Next (wave 1) - grouped by what blocks them
+    if 1 in wave_tickets:
+        console.print("[bold yellow]Next[/bold yellow] (waiting on ready tickets)")
+        # Group by blockers
+        by_blocker = defaultdict(list)
+        for tid in wave_tickets[1]:
+            deps = open_tickets[tid].get("deps", [])
+            open_deps = [d for d in deps if d in open_tickets]
+            blocker_key = ", ".join(sorted(open_deps)) if open_deps else "none"
+            by_blocker[blocker_key].append(tid)
+
+        for blocker, tids in sorted(by_blocker.items()):
+            console.print(f"  [dim]blocked by {blocker}:[/dim]")
+            for tid in sorted(tids):
+                t = open_tickets[tid]
+                title = t.get("title", tid)
+                console.print(f"    [cyan]{tid}[/cyan] {title}")
+        console.print()
+
+    # Later (waves 2+)
+    later_waves = [w for w in wave_tickets.keys() if w >= 2]
+    if later_waves:
+        console.print("[bold blue]Later[/bold blue] (multiple dependencies away)")
+        for wave in sorted(later_waves):
+            console.print(f"  [dim]wave {wave}:[/dim]")
+            for tid in sorted(wave_tickets[wave]):
+                t = open_tickets[tid]
+                title = t.get("title", tid)
+                deps = t.get("deps", [])
+                open_deps = [d for d in deps if d in open_tickets]
+                dep_str = f" [dim](deps: {', '.join(open_deps)})[/dim]" if open_deps else ""
+                console.print(f"    [cyan]{tid}[/cyan] {title}{dep_str}")
+        console.print()
+
+    # Blocked (wave -1, cyclic dependencies)
+    if -1 in wave_tickets:
+        console.print("[bold red]Blocked[/bold red] (cyclic or stuck dependencies)")
+        for tid in sorted(wave_tickets[-1]):
+            t = open_tickets[tid]
+            title = t.get("title", tid)
+            deps = t.get("deps", [])
+            open_deps = [d for d in deps if d in open_tickets]
+            dep_str = f" [dim](deps: {', '.join(open_deps)})[/dim]" if open_deps else ""
+            console.print(f"  [cyan]{tid}[/cyan] {title}{dep_str}")
+        console.print()
+
+    # Summary
+    total = len(open_tickets)
+    ready = len(wave_tickets.get(0, []))
+    blocked = len(wave_tickets.get(-1, []))
+    console.print(f"[dim]{total} open tickets: {ready} ready, {total - ready - blocked} pending, {blocked} blocked[/dim]")
+
+
 def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
     """Show dashboard with runner status, costs, and agent table."""
     global _runner
@@ -802,8 +962,10 @@ def handle_command(line: str, state, project_root: Path) -> bool:
     cmd = parts[0].lower()
     args = parts[1:]
 
-    if cmd in ("q", "quit", "exit"):
+    if cmd in ("quit", "exit"):
         return False
+    elif cmd in ("queue", "q"):
+        cmd_queue(state, args)
     elif cmd in ("h", "help"):
         print_help()
     elif cmd in ("dashboard", "d", "s"):
