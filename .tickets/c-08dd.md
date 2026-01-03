@@ -1,6 +1,6 @@
 ---
 id: c-08dd
-status: open
+status: closed
 deps: [c-986d]
 created: 2026-01-03T18:10:46Z
 type: task

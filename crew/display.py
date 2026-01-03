@@ -125,6 +125,65 @@ def print_peek(agent_name: str, content: str) -> None:
     ))
 
 
+AGENT_COLORS = ["cyan", "green", "yellow", "magenta", "blue", "red"]
+
+
+def get_agent_color(index: int) -> str:
+    """Get color for agent by index."""
+    return AGENT_COLORS[index % len(AGENT_COLORS)]
+
+
+def print_git_status_panels(agents: list[Agent], run_git_fn) -> None:
+    """Print git status panels for working agents.
+
+    Args:
+        agents: List of agents to show panels for
+        run_git_fn: Function to run git commands (takes *args, cwd=)
+    """
+    from crew.git import GitError
+
+    working_agents = [a for a in agents if a.worktree and a.status in ("ready", "working")]
+
+    if not working_agents:
+        return
+
+    for i, agent in enumerate(working_agents):
+        color = get_agent_color(i)
+
+        # Get git status --short
+        try:
+            status = run_git_fn("status", "--short", cwd=agent.worktree)
+        except GitError:
+            status = "[dim]Unable to read worktree[/dim]"
+
+        # Get git diff --stat
+        try:
+            diff_stat = run_git_fn("diff", "--stat", "HEAD", cwd=agent.worktree)
+        except GitError:
+            diff_stat = ""
+
+        # Build content
+        content_parts = []
+        if status.strip():
+            content_parts.append(f"[bold]Status:[/bold]\n{status}")
+        if diff_stat.strip():
+            content_parts.append(f"[bold]Diff:[/bold]\n{diff_stat}")
+
+        content = "\n\n".join(content_parts) if content_parts else "[dim]No changes yet[/dim]"
+
+        # Build header
+        header = f"● {agent.name}"
+        if agent.task:
+            header += f" → {agent.task}"
+
+        console.print(Panel(
+            content,
+            title=f"[bold {color}]{header}[/bold {color}]",
+            border_style=color,
+            padding=(0, 1),
+        ))
+
+
 def print_help() -> None:
     """Print help message."""
     help_text = """

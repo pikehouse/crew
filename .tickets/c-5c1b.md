@@ -1,6 +1,6 @@
 ---
 id: c-5c1b
-status: open
+status: closed
 deps: [c-986d]
 created: 2026-01-03T18:10:46Z
 type: task
