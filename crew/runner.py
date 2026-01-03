@@ -18,6 +18,116 @@ from crew.git import create_worktree, remove_worktree, merge_branch, delete_bran
 from crew.state import State, save_state
 
 
+def detect_test_command(worktree: Path) -> str | None:
+    """Auto-detect the appropriate test command based on project files.
+
+    Checks for common test frameworks in this order:
+    1. pytest (pyproject.toml, setup.py, pytest.ini, requirements*.txt with pytest)
+    2. npm test (package.json with test script)
+    3. cargo test (Cargo.toml)
+    4. make test (Makefile with test target)
+    5. go test (go.mod or *.go files)
+
+    Args:
+        worktree: Path to the worktree directory
+
+    Returns:
+        Test command string if detected, None if no test framework found
+    """
+    # Check for Python/pytest
+    if (worktree / "pyproject.toml").exists():
+        return "pytest"
+    if (worktree / "setup.py").exists():
+        return "pytest"
+    if (worktree / "pytest.ini").exists():
+        return "pytest"
+    # Check requirements files for pytest
+    for req_file in worktree.glob("requirements*.txt"):
+        try:
+            content = req_file.read_text()
+            if "pytest" in content:
+                return "pytest"
+        except Exception:
+            pass
+
+    # Check for npm test
+    package_json = worktree / "package.json"
+    if package_json.exists():
+        try:
+            import json
+            data = json.loads(package_json.read_text())
+            if "scripts" in data and "test" in data["scripts"]:
+                return "npm test"
+        except Exception:
+            pass
+
+    # Check for Cargo/Rust
+    if (worktree / "Cargo.toml").exists():
+        return "cargo test"
+
+    # Check for Makefile with test target
+    makefile = worktree / "Makefile"
+    if makefile.exists():
+        try:
+            content = makefile.read_text()
+            # Look for test: target
+            if "test:" in content or "test :" in content:
+                return "make test"
+        except Exception:
+            pass
+
+    # Check for Go
+    if (worktree / "go.mod").exists():
+        return "go test ./..."
+    if list(worktree.glob("*.go")):
+        return "go test ./..."
+
+    return None
+
+
+def run_tests_in_worktree(worktree: Path, timeout: int = 300) -> tuple[bool, str]:
+    """Run tests in an agent's worktree.
+
+    Auto-detects the test command and runs it.
+
+    Args:
+        worktree: Path to the worktree directory
+        timeout: Timeout in seconds for test execution
+
+    Returns:
+        Tuple of (success: bool, output: str)
+        - success is True if tests pass, False otherwise
+        - output is the combined stdout/stderr from the test run
+    """
+    test_cmd = detect_test_command(worktree)
+
+    if test_cmd is None:
+        # No test command detected - consider this a pass (no tests to run)
+        return True, "No test framework detected"
+
+    try:
+        result = subprocess.run(
+            test_cmd,
+            shell=True,
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+        output = result.stdout
+        if result.stderr:
+            output += "\n--- STDERR ---\n" + result.stderr
+
+        success = result.returncode == 0
+        return success, output
+
+    except subprocess.TimeoutExpired:
+        return False, f"Tests timed out after {timeout} seconds"
+    except Exception as e:
+        return False, f"Failed to run tests: {e}"
+
+
 def format_crew_merge_message(agent: Agent) -> str:
     """Format a merge commit message with crew orchestrator attribution.
 
@@ -108,6 +218,12 @@ Begin working now.
 # Prompts
 INIT_PROMPT = "Read CLAUDE.md and begin working on your assigned task."
 STEP_PROMPT = "Continue working on your task. When complete, output DONE on its own line."
+TEST_FAILURE_PROMPT = """Your task appeared complete, but tests failed. Please fix the failing tests.
+
+Test output:
+{test_output}
+
+Fix the issues and when done, output DONE on its own line."""
 
 
 def run_claude(
@@ -362,15 +478,37 @@ def complete_task(
     agent: Agent,
     state: State,
     project_root: Path | None = None,
-) -> None:
-    """Complete an agent's task - merge, cleanup worktree, return to idle.
+) -> tuple[bool, str | None]:
+    """Complete an agent's task - run tests, merge, cleanup worktree, return to idle.
+
+    Runs tests before merging. If tests fail, returns failure status so the
+    caller can feed test output back to the agent for another step.
 
     Args:
         agent: The agent that completed its task
         state: Current state
         project_root: Project root path
+
+    Returns:
+        Tuple of (success: bool, test_output: str | None)
+        - success is True if tests passed and merge completed
+        - test_output contains test failure output if tests failed, None otherwise
     """
     project_root = project_root or Path.cwd()
+
+    # Store worktree path before any operations
+    worktree_path = agent.worktree
+
+    # Run tests FIRST (before removing worktree)
+    if worktree_path:
+        tests_passed, test_output = run_tests_in_worktree(worktree_path)
+        if not tests_passed:
+            # Tests failed - set agent back to working so it can fix the issues
+            agent.status = "working"
+            save_state(state, project_root)
+            return False, test_output
+
+    # Tests passed - proceed with merge
 
     # Close the ticket
     if agent.task:
@@ -378,7 +516,6 @@ def complete_task(
 
     # Store branch name before removing worktree
     branch_to_merge = agent.branch
-    worktree_path = agent.worktree
 
     # FIRST: Remove worktree (so the branch is no longer checked out)
     if worktree_path:
@@ -422,6 +559,7 @@ def complete_task(
     agent.last_step_at = None
 
     save_state(state, project_root)
+    return True, None
 
 
 # Keep old spawn_agent for backward compatibility

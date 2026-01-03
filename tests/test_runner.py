@@ -15,10 +15,12 @@ from crew.runner import (
     assign_task,
     check_work_completed,
     complete_task,
+    detect_test_command,
     find_claude_process,
     is_done,
     kill_claude_process,
     run_claude,
+    run_tests_in_worktree,
     shutdown_agent,
     spawn_worker,
     step_agent,
@@ -157,6 +159,215 @@ class TestIsDone:
         """is_done returns False when no DONE present."""
         assert is_done("Still working on task") is False
         assert is_done("") is False
+
+
+class TestDetectTestCommand:
+    """Tests for detect_test_command function."""
+
+    def test_detect_pytest_from_pyproject_toml(self, temp_dir: Path):
+        """detect_test_command returns 'pytest' when pyproject.toml exists."""
+        (temp_dir / "pyproject.toml").write_text("[project]\nname = 'test'")
+        assert detect_test_command(temp_dir) == "pytest"
+
+    def test_detect_pytest_from_setup_py(self, temp_dir: Path):
+        """detect_test_command returns 'pytest' when setup.py exists."""
+        (temp_dir / "setup.py").write_text("from setuptools import setup")
+        assert detect_test_command(temp_dir) == "pytest"
+
+    def test_detect_pytest_from_pytest_ini(self, temp_dir: Path):
+        """detect_test_command returns 'pytest' when pytest.ini exists."""
+        (temp_dir / "pytest.ini").write_text("[pytest]")
+        assert detect_test_command(temp_dir) == "pytest"
+
+    def test_detect_pytest_from_requirements_txt(self, temp_dir: Path):
+        """detect_test_command returns 'pytest' when pytest is in requirements.txt."""
+        (temp_dir / "requirements.txt").write_text("pytest>=7.0\nrequests")
+        assert detect_test_command(temp_dir) == "pytest"
+
+    def test_detect_pytest_from_requirements_dev_txt(self, temp_dir: Path):
+        """detect_test_command returns 'pytest' when pytest is in requirements-dev.txt."""
+        (temp_dir / "requirements-dev.txt").write_text("pytest\nblack")
+        assert detect_test_command(temp_dir) == "pytest"
+
+    def test_detect_npm_test_with_test_script(self, temp_dir: Path):
+        """detect_test_command returns 'npm test' when package.json has test script."""
+        (temp_dir / "package.json").write_text('{"scripts": {"test": "jest"}}')
+        assert detect_test_command(temp_dir) == "npm test"
+
+    def test_detect_npm_test_no_script_returns_none(self, temp_dir: Path):
+        """detect_test_command returns None when package.json has no test script."""
+        (temp_dir / "package.json").write_text('{"name": "myproject"}')
+        assert detect_test_command(temp_dir) is None
+
+    def test_detect_cargo_test(self, temp_dir: Path):
+        """detect_test_command returns 'cargo test' when Cargo.toml exists."""
+        (temp_dir / "Cargo.toml").write_text("[package]\nname = 'test'")
+        assert detect_test_command(temp_dir) == "cargo test"
+
+    def test_detect_make_test(self, temp_dir: Path):
+        """detect_test_command returns 'make test' when Makefile has test target."""
+        (temp_dir / "Makefile").write_text("test:\n\tpytest\n")
+        assert detect_test_command(temp_dir) == "make test"
+
+    def test_detect_make_test_with_space(self, temp_dir: Path):
+        """detect_test_command detects 'test :' with space."""
+        (temp_dir / "Makefile").write_text("test :\n\tpytest\n")
+        assert detect_test_command(temp_dir) == "make test"
+
+    def test_detect_make_no_test_target(self, temp_dir: Path):
+        """detect_test_command returns None when Makefile has no test target."""
+        (temp_dir / "Makefile").write_text("build:\n\tgo build\n")
+        assert detect_test_command(temp_dir) is None
+
+    def test_detect_go_test_from_go_mod(self, temp_dir: Path):
+        """detect_test_command returns 'go test ./...' when go.mod exists."""
+        (temp_dir / "go.mod").write_text("module example.com/myproject")
+        assert detect_test_command(temp_dir) == "go test ./..."
+
+    def test_detect_go_test_from_go_files(self, temp_dir: Path):
+        """detect_test_command returns 'go test ./...' when .go files exist."""
+        (temp_dir / "main.go").write_text("package main")
+        assert detect_test_command(temp_dir) == "go test ./..."
+
+    def test_detect_returns_none_when_no_framework(self, temp_dir: Path):
+        """detect_test_command returns None when no test framework found."""
+        assert detect_test_command(temp_dir) is None
+
+    def test_detect_priority_pytest_over_npm(self, temp_dir: Path):
+        """detect_test_command prefers pytest over npm test."""
+        (temp_dir / "pyproject.toml").write_text("[project]")
+        (temp_dir / "package.json").write_text('{"scripts": {"test": "jest"}}')
+        assert detect_test_command(temp_dir) == "pytest"
+
+    def test_detect_handles_invalid_package_json(self, temp_dir: Path):
+        """detect_test_command handles invalid JSON in package.json."""
+        (temp_dir / "package.json").write_text("not valid json")
+        assert detect_test_command(temp_dir) is None
+
+    def test_detect_handles_unreadable_requirements(self, temp_dir: Path):
+        """detect_test_command handles unreadable requirements file gracefully."""
+        req_file = temp_dir / "requirements.txt"
+        req_file.write_text("pytest")
+        req_file.chmod(0o000)  # Make unreadable
+        try:
+            # Should not raise, returns None or pytest depending on order
+            result = detect_test_command(temp_dir)
+            # Since we can't read it, it won't detect pytest from requirements
+            # but there's no other framework, so None
+            assert result is None
+        finally:
+            req_file.chmod(0o644)  # Restore permissions for cleanup
+
+
+class TestRunTestsInWorktree:
+    """Tests for run_tests_in_worktree function."""
+
+    def test_run_tests_passes_with_exit_0(self, temp_dir: Path):
+        """run_tests_in_worktree returns (True, output) when tests pass."""
+        (temp_dir / "pyproject.toml").write_text("[project]")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="3 tests passed",
+                stderr="",
+            )
+
+            success, output = run_tests_in_worktree(temp_dir)
+
+            assert success is True
+            assert "3 tests passed" in output
+
+    def test_run_tests_fails_with_nonzero_exit(self, temp_dir: Path):
+        """run_tests_in_worktree returns (False, output) when tests fail."""
+        (temp_dir / "pyproject.toml").write_text("[project]")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="1 failed, 2 passed",
+                stderr="AssertionError: expected True",
+            )
+
+            success, output = run_tests_in_worktree(temp_dir)
+
+            assert success is False
+            assert "1 failed" in output
+            assert "AssertionError" in output
+
+    def test_run_tests_no_framework_returns_success(self, temp_dir: Path):
+        """run_tests_in_worktree returns (True, message) when no framework detected."""
+        success, output = run_tests_in_worktree(temp_dir)
+
+        assert success is True
+        assert "No test framework detected" in output
+
+    def test_run_tests_timeout(self, temp_dir: Path):
+        """run_tests_in_worktree returns (False, message) on timeout."""
+        (temp_dir / "pyproject.toml").write_text("[project]")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="pytest", timeout=300)
+
+            success, output = run_tests_in_worktree(temp_dir, timeout=300)
+
+            assert success is False
+            assert "timed out" in output
+
+    def test_run_tests_exception(self, temp_dir: Path):
+        """run_tests_in_worktree returns (False, message) on exception."""
+        (temp_dir / "pyproject.toml").write_text("[project]")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = OSError("Command not found")
+
+            success, output = run_tests_in_worktree(temp_dir)
+
+            assert success is False
+            assert "Failed to run tests" in output
+
+    def test_run_tests_includes_stderr(self, temp_dir: Path):
+        """run_tests_in_worktree includes stderr in output."""
+        (temp_dir / "pyproject.toml").write_text("[project]")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="Tests passed",
+                stderr="Warning: deprecated function",
+            )
+
+            success, output = run_tests_in_worktree(temp_dir)
+
+            assert success is True
+            assert "Tests passed" in output
+            assert "STDERR" in output
+            assert "deprecated function" in output
+
+    def test_run_tests_uses_correct_command(self, temp_dir: Path):
+        """run_tests_in_worktree uses the detected test command."""
+        (temp_dir / "Cargo.toml").write_text("[package]")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+
+            run_tests_in_worktree(temp_dir)
+
+            call_args = mock_run.call_args
+            assert call_args[0][0] == "cargo test"
+            assert call_args[1]["cwd"] == temp_dir
+
+    def test_run_tests_custom_timeout(self, temp_dir: Path):
+        """run_tests_in_worktree respects custom timeout."""
+        (temp_dir / "pyproject.toml").write_text("[project]")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+
+            run_tests_in_worktree(temp_dir, timeout=600)
+
+            call_args = mock_run.call_args
+            assert call_args[1]["timeout"] == 600
 
 
 class TestSpawnWorker:
@@ -514,33 +725,8 @@ class TestStepAgent:
 class TestCompleteTask:
     """Tests for complete_task function."""
 
-    def test_complete_task_closes_ticket(self, project_root: Path):
-        """complete_task closes the ticket via tk."""
-        state = State()
-        agent = Agent(
-            name="test-agent",
-            session="session-123",
-            worktree=project_root / "agents" / "test-worktree",
-            branch="agent/test-branch",
-            task="c-100",
-            status="done",
-            started_at=datetime.now(),
-            step_count=5,
-        )
-        state.add_agent(agent)
-
-        with patch("crew.runner.close_ticket") as mock_close, \
-             patch("crew.runner.remove_worktree"), \
-             patch("crew.runner.run_git"), \
-             patch("crew.runner.merge_branch"), \
-             patch("crew.runner.delete_branch"):
-
-            complete_task(agent, state, project_root=project_root)
-
-            mock_close.assert_called_once_with("c-100")
-
-    def test_complete_task_removes_worktree(self, project_root: Path):
-        """complete_task removes the worktree."""
+    def test_complete_task_runs_tests_first(self, project_root: Path):
+        """complete_task runs tests before proceeding with merge."""
         state = State()
         worktree = project_root / "agents" / "test-worktree"
         agent = Agent(
@@ -555,18 +741,78 @@ class TestCompleteTask:
         )
         state.add_agent(agent)
 
-        with patch("crew.runner.close_ticket"), \
-             patch("crew.runner.remove_worktree") as mock_remove_wt, \
+        with patch("crew.runner.run_tests_in_worktree") as mock_tests, \
+             patch("crew.runner.close_ticket"), \
+             patch("crew.runner.remove_worktree"), \
              patch("crew.runner.run_git"), \
              patch("crew.runner.merge_branch"), \
              patch("crew.runner.delete_branch"):
 
+            mock_tests.return_value = (True, "All tests passed")
+
+            success, output = complete_task(agent, state, project_root=project_root)
+
+            mock_tests.assert_called_once_with(worktree)
+            assert success is True
+            assert output is None
+
+    def test_complete_task_fails_on_test_failure(self, project_root: Path):
+        """complete_task returns failure when tests fail."""
+        state = State()
+        worktree = project_root / "agents" / "test-worktree"
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=worktree,
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.runner.run_tests_in_worktree") as mock_tests, \
+             patch("crew.runner.close_ticket") as mock_close, \
+             patch("crew.runner.remove_worktree") as mock_remove, \
+             patch("crew.runner.merge_branch") as mock_merge:
+
+            mock_tests.return_value = (False, "FAILED: test_foo.py::test_bar")
+
+            success, output = complete_task(agent, state, project_root=project_root)
+
+            assert success is False
+            assert "FAILED" in output
+            # Should NOT proceed to close ticket, remove worktree, or merge
+            mock_close.assert_not_called()
+            mock_remove.assert_not_called()
+            mock_merge.assert_not_called()
+
+    def test_complete_task_sets_agent_back_to_working_on_test_failure(self, project_root: Path):
+        """complete_task sets agent status to 'working' when tests fail."""
+        state = State()
+        worktree = project_root / "agents" / "test-worktree"
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=worktree,
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.runner.run_tests_in_worktree") as mock_tests:
+            mock_tests.return_value = (False, "Tests failed")
+
             complete_task(agent, state, project_root=project_root)
 
-            mock_remove_wt.assert_called_once_with(worktree)
+            assert agent.status == "working"
 
-    def test_complete_task_merges_branch(self, project_root: Path):
-        """complete_task merges the agent's branch."""
+    def test_complete_task_closes_ticket(self, project_root: Path):
+        """complete_task closes the ticket via tk when tests pass."""
         state = State()
         agent = Agent(
             name="test-agent",
@@ -580,7 +826,61 @@ class TestCompleteTask:
         )
         state.add_agent(agent)
 
-        with patch("crew.runner.close_ticket"), \
+        with patch("crew.runner.run_tests_in_worktree", return_value=(True, "OK")), \
+             patch("crew.runner.close_ticket") as mock_close, \
+             patch("crew.runner.remove_worktree"), \
+             patch("crew.runner.run_git"), \
+             patch("crew.runner.merge_branch"), \
+             patch("crew.runner.delete_branch"):
+
+            complete_task(agent, state, project_root=project_root)
+
+            mock_close.assert_called_once_with("c-100")
+
+    def test_complete_task_removes_worktree(self, project_root: Path):
+        """complete_task removes the worktree when tests pass."""
+        state = State()
+        worktree = project_root / "agents" / "test-worktree"
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=worktree,
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.runner.run_tests_in_worktree", return_value=(True, "OK")), \
+             patch("crew.runner.close_ticket"), \
+             patch("crew.runner.remove_worktree") as mock_remove_wt, \
+             patch("crew.runner.run_git"), \
+             patch("crew.runner.merge_branch"), \
+             patch("crew.runner.delete_branch"):
+
+            complete_task(agent, state, project_root=project_root)
+
+            mock_remove_wt.assert_called_once_with(worktree)
+
+    def test_complete_task_merges_branch(self, project_root: Path):
+        """complete_task merges the agent's branch when tests pass."""
+        state = State()
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=project_root / "agents" / "test-worktree",
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.runner.run_tests_in_worktree", return_value=(True, "OK")), \
+             patch("crew.runner.close_ticket"), \
              patch("crew.runner.remove_worktree"), \
              patch("crew.runner.run_git"), \
              patch("crew.runner.merge_branch") as mock_merge, \
@@ -593,7 +893,7 @@ class TestCompleteTask:
             assert "agent/test-branch" in call_args[0]
 
     def test_complete_task_resets_agent_to_idle(self, project_root: Path):
-        """complete_task resets agent to idle state."""
+        """complete_task resets agent to idle state when tests pass."""
         state = State()
         agent = Agent(
             name="test-agent",
@@ -610,7 +910,8 @@ class TestCompleteTask:
         )
         state.add_agent(agent)
 
-        with patch("crew.runner.close_ticket"), \
+        with patch("crew.runner.run_tests_in_worktree", return_value=(True, "OK")), \
+             patch("crew.runner.close_ticket"), \
              patch("crew.runner.remove_worktree"), \
              patch("crew.runner.run_git"), \
              patch("crew.runner.merge_branch"), \
@@ -626,7 +927,7 @@ class TestCompleteTask:
             assert agent.step_count == 0
 
     def test_complete_task_deletes_branch(self, project_root: Path):
-        """complete_task deletes the merged branch."""
+        """complete_task deletes the merged branch when tests pass."""
         state = State()
         agent = Agent(
             name="test-agent",
@@ -640,7 +941,8 @@ class TestCompleteTask:
         )
         state.add_agent(agent)
 
-        with patch("crew.runner.close_ticket"), \
+        with patch("crew.runner.run_tests_in_worktree", return_value=(True, "OK")), \
+             patch("crew.runner.close_ticket"), \
              patch("crew.runner.remove_worktree"), \
              patch("crew.runner.run_git"), \
              patch("crew.runner.merge_branch"), \
@@ -649,6 +951,58 @@ class TestCompleteTask:
             complete_task(agent, state, project_root=project_root)
 
             mock_delete.assert_called_once_with("agent/test-branch")
+
+    def test_complete_task_returns_success_tuple(self, project_root: Path):
+        """complete_task returns (True, None) on success."""
+        state = State()
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=project_root / "agents" / "test-worktree",
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.runner.run_tests_in_worktree", return_value=(True, "OK")), \
+             patch("crew.runner.close_ticket"), \
+             patch("crew.runner.remove_worktree"), \
+             patch("crew.runner.run_git"), \
+             patch("crew.runner.merge_branch"), \
+             patch("crew.runner.delete_branch"):
+
+            success, output = complete_task(agent, state, project_root=project_root)
+
+            assert success is True
+            assert output is None
+
+    def test_complete_task_returns_failure_tuple_with_test_output(self, project_root: Path):
+        """complete_task returns (False, test_output) on test failure."""
+        state = State()
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=project_root / "agents" / "test-worktree",
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        test_failure_output = "FAILED test_foo.py::test_bar - AssertionError"
+
+        with patch("crew.runner.run_tests_in_worktree") as mock_tests:
+            mock_tests.return_value = (False, test_failure_output)
+
+            success, output = complete_task(agent, state, project_root=project_root)
+
+            assert success is False
+            assert output == test_failure_output
 
 
 class TestTokenAccumulation:
