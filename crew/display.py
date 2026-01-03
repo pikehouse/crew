@@ -131,15 +131,12 @@ def print_help() -> None:
 [bold]Commands:[/bold]
 
   [cyan]dashboard[/cyan], [cyan]d[/cyan], [cyan]s[/cyan]  Show dashboard with agent table and costs
-  [cyan]status[/cyan]           Show all agents and queue (detailed)
   [cyan]spawn[/cyan] <n|name> [task] Create n workers (a,b,c...) or named worker
   [cyan]step[/cyan] <name>       Run one step for agent
   [cyan]run[/cyan]              Start agents in background
   [cyan]stop[/cyan]             Stop background runner (Ctrl-C also works)
   [cyan]ps[/cyan]               Show running claude processes
-  [cyan]watch[/cyan]            Show live file changes in worktrees
   [cyan]peek[/cyan] <name>       Show agent's recent output (after step completes)
-  [cyan]sniff[/cyan]            Show tail of ALL agents' output (after steps complete)
   [cyan]logs[/cyan] <name>       Show log directory
   [cyan]kill[/cyan] <name>       Stop agent, keep worktree
   [cyan]cleanup[/cyan] <name>    Remove agent and worktree
