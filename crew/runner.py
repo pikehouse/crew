@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import uuid
 from datetime import datetime
@@ -87,8 +88,8 @@ def run_claude(
     session: str | None = None,
     is_new_session: bool = False,
     timeout: int = 300,
-) -> tuple[str, str]:
-    """Run claude --print and capture output.
+) -> dict:
+    """Run claude --print with JSON output and parse the response.
 
     Args:
         prompt: The prompt to send
@@ -98,9 +99,9 @@ def run_claude(
         timeout: Timeout in seconds
 
     Returns:
-        Tuple of (stdout, stderr)
+        Parsed JSON response with keys: result, input_tokens, output_tokens, cost_usd, stderr
     """
-    cmd = ["claude", "--print"]
+    cmd = ["claude", "--print", "--output-format", "json"]
 
     if session:
         if is_new_session:
@@ -121,7 +122,30 @@ def run_claude(
             timeout=timeout,
             stdin=subprocess.DEVNULL,  # Don't wait for stdin
         )
-        return result.stdout, result.stderr
+
+        # Parse JSON output
+        response = {
+            "result": "",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0.0,
+            "stderr": result.stderr,
+        }
+
+        if result.stdout.strip():
+            try:
+                data = json.loads(result.stdout)
+                response["result"] = data.get("result", "")
+                # Extract usage data
+                if "usage" in data:
+                    response["input_tokens"] = data["usage"].get("input_tokens", 0)
+                    response["output_tokens"] = data["usage"].get("output_tokens", 0)
+                response["cost_usd"] = data.get("total_cost_usd", 0.0)
+            except json.JSONDecodeError:
+                # If JSON parsing fails, treat stdout as plain text
+                response["result"] = result.stdout
+
+        return response
 
     except subprocess.TimeoutExpired:
         raise TimeoutError(f"Claude command timed out after {timeout}s")
@@ -276,7 +300,7 @@ def resolve_merge_conflicts(project_root: Path) -> bool:
     # Use Claude to resolve conflicts
     session_id = generate_session_id()
     try:
-        stdout, stderr = run_claude(
+        response = run_claude(
             MERGE_CONFLICT_PROMPT,
             cwd=project_root,
             session=session_id,
@@ -285,11 +309,11 @@ def resolve_merge_conflicts(project_root: Path) -> bool:
         )
 
         # Check if Claude said DONE
-        if is_done(stdout):
+        if is_done(response["result"]):
             return True
 
         # Maybe it needs another step
-        stdout2, stderr2 = run_claude(
+        response2 = run_claude(
             "Continue resolving conflicts. When done, output DONE.",
             cwd=project_root,
             session=session_id,
@@ -297,7 +321,7 @@ def resolve_merge_conflicts(project_root: Path) -> bool:
             timeout=600,
         )
 
-        return is_done(stdout2)
+        return is_done(response2["result"])
 
     except Exception as e:
         return False
@@ -414,7 +438,7 @@ def step_agent(
         project_root: Project root path
 
     Returns:
-        The Claude output
+        The Claude output (result text)
     """
     project_root = project_root or Path.cwd()
 
@@ -428,12 +452,21 @@ def step_agent(
         agent.status = "working"
 
     # Run claude - first step creates session, subsequent resume it
-    stdout, stderr = run_claude(
+    response = run_claude(
         prompt,
         cwd=agent.worktree,
         session=agent.session,
         is_new_session=is_first_step,
     )
+
+    # Extract result and stderr from response
+    result = response["result"]
+    stderr = response["stderr"]
+
+    # Accumulate token usage
+    agent.total_input_tokens += response["input_tokens"]
+    agent.total_output_tokens += response["output_tokens"]
+    agent.total_cost_usd += response["cost_usd"]
 
     # Update step count
     agent.step_count += 1
@@ -444,14 +477,14 @@ def step_agent(
         agent_name=agent.name,
         log_type="step",
         prompt=prompt,
-        output=stdout + ("\n---STDERR---\n" + stderr if stderr else ""),
+        output=result + ("\n---STDERR---\n" + stderr if stderr else ""),
         session=agent.session,
         step=agent.step_count,
         project_root=project_root,
     )
 
     # Check if done (but don't close ticket yet - that happens after merge)
-    if is_done(stdout):
+    if is_done(result):
         agent.status = "done"
 
     # Check if stuck (too many steps)
@@ -461,7 +494,7 @@ def step_agent(
     # Save state
     save_state(state, project_root)
 
-    return stdout
+    return result
 
 
 def cleanup_agent(
