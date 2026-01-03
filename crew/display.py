@@ -131,7 +131,7 @@ def print_help() -> None:
 [bold]Commands:[/bold]
 
   [cyan]status[/cyan], [cyan]s[/cyan]          Show all agents and queue
-  [cyan]spawn[/cyan] <name> [task]   Create worker (optionally with task)
+  [cyan]spawn[/cyan] <n|name> [task] Create n workers (a,b,c...) or named worker
   [cyan]step[/cyan] <name>       Run one step for agent
   [cyan]run[/cyan]              Start agents in background
   [cyan]stop[/cyan]             Stop background runner (Ctrl-C also works)

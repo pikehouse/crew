@@ -242,13 +242,59 @@ def cmd_status(state, args: list[str], project_root: Path) -> None:
         console.print("[dim]No ready work.[/dim]")
 
 
+def _next_worker_name(state) -> str:
+    """Get next available single-letter worker name (a, b, c, ...)."""
+    existing = set(state.agents.keys())
+    for i in range(26):
+        name = chr(ord('a') + i)
+        if name not in existing:
+            return name
+    # Fall back to a1, a2, etc if we run out of letters
+    for i in range(100):
+        name = f"a{i}"
+        if name not in existing:
+            return name
+    return f"worker{len(existing)}"
+
+
 def cmd_spawn(state, args: list[str], project_root: Path) -> None:
-    """Spawn a new worker agent."""
+    """Spawn worker agent(s).
+
+    Usage:
+        spawn <name>       - spawn a single named worker
+        spawn <n>          - spawn n workers with auto names (a, b, c, ...)
+        spawn <name> <id>  - spawn named worker with task
+    """
     if not args:
-        print_error("Usage: spawn <name> [task-id]")
+        print_error("Usage: spawn <name|count> [task-id]")
         return
 
-    name = args[0]
+    first_arg = args[0]
+
+    # Check if first arg is a number (spawn N workers)
+    if first_arg.isdigit():
+        count = int(first_arg)
+        if count < 1 or count > 26:
+            print_error("Can spawn 1-26 workers at a time")
+            return
+
+        created = []
+        for _ in range(count):
+            name = _next_worker_name(state)
+            try:
+                spawn_worker(name, state, project_root)
+                created.append(name)
+            except Exception as e:
+                print_error(f"Failed to spawn {name}: {e}")
+                break
+
+        if created:
+            console.print(f"[green]✓[/green] Created {len(created)} workers: [bold]{', '.join(created)}[/bold]")
+            print_info("Use 'run' to auto-assign work")
+        return
+
+    # Single named worker
+    name = first_arg
     task_id = args[1] if len(args) > 1 else None
 
     # Check if agent already exists
