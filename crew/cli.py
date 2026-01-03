@@ -17,11 +17,13 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from rich.console import Console
 
 from crew.state import load_state, save_state, ensure_crew_dir
+from crew.pid import check_and_acquire_lock, remove_pid_file
 from crew.display import (
     print_banner,
     print_help,
     print_error,
     print_info,
+    print_warning,
     print_agent_created,
     print_agent_step,
     print_agent_done,
@@ -186,25 +188,37 @@ class BackgroundRunner:
 # Global runner instance
 _runner: BackgroundRunner | None = None
 
+# Global read-only mode flag
+_read_only_mode: bool = False
+
+# Commands that modify state and are blocked in read-only mode
+_MODIFYING_COMMANDS = frozenset({
+    "spawn", "run", "stop", "kill", "cleanup", "merge",
+    "reset", "new", "dep", "assign"
+})
+
 
 def get_prompt(state) -> str:
     """Generate the prompt string."""
-    global _runner
+    global _runner, _read_only_mode
 
     workers = len(state.agents)
     working = len([a for a in state.agents.values() if a.status in ("ready", "working")])
     idle = len([a for a in state.agents.values() if a.status == "idle"])
 
+    # Build the read-only prefix if applicable
+    ro_prefix = "[read-only] " if _read_only_mode else ""
+
     if _runner and _runner.is_running:
         if working:
-            return f"[{working}/{workers} working] crew> "
+            return f"{ro_prefix}[{working}/{workers} working] crew> "
         elif idle:
-            return f"[{idle}/{workers} waiting] crew> "
+            return f"{ro_prefix}[{idle}/{workers} waiting] crew> "
         else:
-            return f"[{workers} agents] crew> "
+            return f"{ro_prefix}[{workers} agents] crew> "
     elif workers:
-        return f"[{workers} workers] crew> "
-    return "crew> "
+        return f"{ro_prefix}[{workers} workers] crew> "
+    return f"{ro_prefix}crew> "
 
 
 def run_tk(*args: str) -> str:
@@ -1044,12 +1058,19 @@ def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
 
 def handle_command(line: str, state, project_root: Path) -> bool:
     """Handle a command line. Returns True to continue, False to quit."""
+    global _read_only_mode
+
     parts = line.strip().split()
     if not parts:
         return True
 
     cmd = parts[0].lower()
     args = parts[1:]
+
+    # Block modifying commands in read-only mode
+    if _read_only_mode and cmd in _MODIFYING_COMMANDS:
+        print_error(f"Cannot run '{cmd}' in read-only mode. Another crew instance is running.")
+        return True
 
     if cmd in ("quit", "exit"):
         return False
@@ -1097,10 +1118,19 @@ def handle_command(line: str, state, project_root: Path) -> bool:
 
 def main() -> None:
     """Main entry point."""
+    global _read_only_mode
+
     project_root = Path.cwd()
 
     # Ensure .crew directory exists
     ensure_crew_dir(project_root)
+
+    # Check for existing instance and acquire PID lock
+    if check_and_acquire_lock(project_root):
+        _read_only_mode = False
+    else:
+        _read_only_mode = True
+        print_warning("Another crew instance is running. Entering read-only mode.")
 
     # Load state
     state = load_state(project_root)
@@ -1138,6 +1168,10 @@ def main() -> None:
     # Stop runner on exit
     if _runner and _runner.is_running:
         _runner.stop()
+
+    # Clean up PID file on exit (only if we're not in read-only mode)
+    if not _read_only_mode:
+        remove_pid_file(project_root)
 
     console.print("[dim]bye[/dim]")
 
