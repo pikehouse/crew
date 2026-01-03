@@ -18,6 +18,31 @@ from crew.git import create_worktree, remove_worktree, merge_branch, delete_bran
 from crew.state import State, save_state
 
 
+def format_crew_merge_message(agent: Agent) -> str:
+    """Format a merge commit message with crew orchestrator attribution.
+
+    Includes task ID, agent name, steps taken, and cost.
+
+    Args:
+        agent: The agent whose work is being merged
+
+    Returns:
+        Formatted merge commit message with crew attribution
+    """
+    task_id = agent.task or "no task"
+    agent_name = agent.name
+    steps = agent.step_count
+    cost = agent.total_cost_usd
+
+    message = f"Merge {agent.branch} ({task_id})\n\n"
+    message += f"Agent: {agent_name}\n"
+    message += f"Steps: {steps}\n"
+    message += f"Cost: ${cost:.4f}\n\n"
+    message += "🤖 Merged by crew orchestrator"
+
+    return message
+
+
 def generate_session_id() -> str:
     """Generate a new session ID (UUID)."""
     return str(uuid.uuid4())
@@ -363,7 +388,7 @@ def complete_task(
     try:
         merge_branch(
             branch_to_merge,
-            message=f"Merge {branch_to_merge} ({agent.task})",
+            message=format_crew_merge_message(agent),
         )
     except Exception as e:
         # Merge failed - likely conflicts. Try to resolve with Claude.
@@ -522,7 +547,7 @@ def cleanup_agent(
         try:
             merge_branch(
                 agent.branch,
-                message=f"Merge {agent.branch} ({agent.task or 'no task'})",
+                message=format_crew_merge_message(agent),
             )
             delete_branch(agent.branch)
         except Exception as e:
