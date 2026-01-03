@@ -8,7 +8,7 @@ Multi-agent orchestrator for Claude Code.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        crew                                  │
+│                        crew                                 │
 ├─────────────────────────────────────────────────────────────┤
 │  REPL UI          State Manager       Agent Runner          │
 │  - prompt         - agents.json       - spawn/step/cleanup  │
@@ -33,7 +33,7 @@ pip install -e .
 
 - Python 3.11+
 - Claude Code CLI (`claude`)
-- `ticket` (`tk`) for issue tracking
+- [`ticket`](https://github.com/wedow/ticket#) (`tk`) for issue tracking
 - Git
 
 ## Usage
