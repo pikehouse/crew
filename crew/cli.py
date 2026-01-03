@@ -1203,7 +1203,15 @@ def recover_session(state, project_root: Path) -> bool:
                 # Use shutdown_agent to reconcile state based on logs
                 work_status = shutdown_agent(agent, state, project_root)
                 if work_status == "done":
-                    actions_taken.append(f"Marked {agent.name} as done (found DONE in logs)")
+                    # Agent completed their task - run complete_task to merge, close ticket, return to idle
+                    task_id = agent.task
+                    branch = agent.branch
+                    try:
+                        complete_task(agent, state, project_root)
+                        actions_taken.append(f"Completed {agent.name} (merged {branch}, closed {task_id})")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to complete {agent.name}: {e}")
+                        # Leave agent as done so user can manually handle
                 elif work_status == "partial":
                     actions_taken.append(f"Agent {agent.name} has partial work (can resume)")
                 elif work_status == "nothing":
@@ -1212,12 +1220,28 @@ def recover_session(state, project_root: Path) -> bool:
             # Idle agents are fine, just display
             console.print(f"  {status_icon} [bold]{agent.name}[/bold] [dim](idle)[/dim]")
         elif agent.status == "done":
-            # Done agents - check if worktree still exists for potential merge
+            # Done agents - need to call complete_task to finish the lifecycle
             if worktree_exists:
                 console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done, pending merge)[/dim]")
+                # Complete the task (merge, cleanup, return to idle)
+                task_id = agent.task
+                branch = agent.branch
+                try:
+                    complete_task(agent, state, project_root)
+                    actions_taken.append(f"Completed {agent.name} (merged {branch}, closed {task_id})")
+                except Exception as e:
+                    actions_taken.append(f"Failed to complete {agent.name}: {e}")
             else:
-                # Worktree gone but agent marked done - already merged or cleaned up
-                console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done)[/dim]")
+                # Worktree gone but agent marked done - reset to idle since work is lost
+                console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done, worktree missing)[/dim]")
+                agent.status = "idle"
+                agent.worktree = None
+                agent.branch = ""
+                agent.task = None
+                agent.session = ""
+                agent.step_count = 0
+                agent.last_step_at = None
+                actions_taken.append(f"Reset {agent.name} to idle (done but worktree missing)")
         elif agent.status == "stuck":
             console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](stuck)[/dim]")
         else:
