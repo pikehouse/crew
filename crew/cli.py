@@ -29,7 +29,7 @@ from crew.display import (
     print_peek,
     print_git_status_panels,
 )
-from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks
+from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks, shutdown_agent
 from crew.crew_logging import read_log_tail
 
 console = Console()
@@ -446,6 +446,81 @@ def cmd_reset(state, args: list[str], project_root: Path) -> None:
 
     console.print()
     console.print(f"[green]✓[/green] Reset complete. Fresh start at {commit}")
+
+
+def cmd_clean(state, args: list[str], project_root: Path) -> None:
+    """Wipe all crew state - shutdown agents, remove worktrees, delete state.
+
+    Usage:
+        clean          - Clean up everything (prompt for logs deletion)
+        clean --logs   - Also delete .crew/logs/
+    """
+    global _runner
+
+    delete_logs = "--logs" in args
+
+    # If not deleting logs via flag, ask user
+    if not delete_logs and (project_root / ".crew" / "logs").exists():
+        try:
+            response = console.input("[bold]Delete logs too? (y/N): [/bold]")
+            delete_logs = response.strip().lower() in ("y", "yes")
+        except (KeyboardInterrupt, EOFError):
+            print_info("Cancelled")
+            return
+
+    console.print()
+
+    # Stop runner if running
+    if _runner and _runner.is_running:
+        _runner.stop()
+        console.print("[dim]Stopped runner[/dim]")
+
+    # Shutdown all agents gracefully
+    from crew.git import remove_worktree, run_git, GitError
+
+    for agent in list(state.agents.values()):
+        try:
+            status = shutdown_agent(agent, state, project_root)
+            console.print(f"[dim]Shutdown agent {agent.name} (status: {status})[/dim]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not shutdown {agent.name}: {e}[/yellow]")
+
+    # Remove all worktrees in agents/
+    agents_dir = project_root / "agents"
+    if agents_dir.exists():
+        for worktree_dir in agents_dir.iterdir():
+            if worktree_dir.is_dir():
+                try:
+                    remove_worktree(worktree_dir)
+                    console.print(f"[dim]Removed worktree {worktree_dir.name}[/dim]")
+                except Exception as e:
+                    console.print(f"[yellow]Warning: Could not remove {worktree_dir}: {e}[/yellow]")
+
+    # Prune worktrees
+    try:
+        run_git("worktree", "prune", cwd=project_root)
+    except GitError:
+        pass
+
+    # Delete state.json
+    state_file = project_root / ".crew" / "state.json"
+    if state_file.exists():
+        state_file.unlink()
+        console.print("[dim]Deleted state.json[/dim]")
+
+    # Clear in-memory state
+    state.agents.clear()
+
+    # Optionally delete logs
+    if delete_logs:
+        logs_dir = project_root / ".crew" / "logs"
+        if logs_dir.exists():
+            import shutil
+            shutil.rmtree(logs_dir)
+            console.print("[dim]Deleted logs/[/dim]")
+
+    console.print()
+    console.print("[green]✓[/green] Clean complete. All crew state wiped.")
 
 
 def print_runner_events() -> None:
@@ -998,6 +1073,8 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_assign(state, args, project_root)
     elif cmd == "reset":
         cmd_reset(state, args, project_root)
+    elif cmd == "clean":
+        cmd_clean(state, args, project_root)
     else:
         print_error(f"Unknown command: {cmd}. Type 'help' for commands.")
 
