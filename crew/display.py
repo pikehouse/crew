@@ -191,7 +191,6 @@ def print_help() -> None:
 
   [cyan]dashboard[/cyan], [cyan]d[/cyan], [cyan]s[/cyan]  Show dashboard with agent table and costs
   [cyan]spawn[/cyan] <n|name> [task] Create n workers (a,b,c...) or named worker
-  [cyan]step[/cyan] <name>       Run one step for agent
   [cyan]run[/cyan]              Start agents in background
   [cyan]stop[/cyan]             Stop background runner (Ctrl-C also works)
   [cyan]ps[/cyan]               Show running claude processes
