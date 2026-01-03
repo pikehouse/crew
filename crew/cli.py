@@ -19,7 +19,6 @@ from rich.console import Console
 from crew.state import load_state, save_state, ensure_crew_dir
 from crew.display import (
     print_banner,
-    print_status,
     print_help,
     print_error,
     print_info,
@@ -219,28 +218,6 @@ def run_tk(*args: str) -> str:
         return result.stdout + result.stderr
     except FileNotFoundError:
         return "Error: tk command not found. Is ticket installed?"
-
-
-def cmd_status(state, args: list[str], project_root: Path) -> None:
-    """Show status of agents and queue."""
-    global _runner
-
-    # Print any pending events first
-    print_runner_events()
-
-    # Show runner status
-    if _runner and _runner.is_running:
-        console.print("[bold green]● Runner active[/bold green]\n")
-
-    print_status(state)
-
-    # Also show tk ready
-    console.print("[bold]Ready Work:[/bold]")
-    output = run_tk("ready")
-    if output.strip():
-        console.print(output)
-    else:
-        console.print("[dim]No ready work.[/dim]")
 
 
 def _next_worker_name(state) -> str:
@@ -555,58 +532,6 @@ def cmd_peek(state, args: list[str], project_root: Path) -> None:
         print_info(f"No logs for agent '{name}'")
 
 
-def cmd_watch(state, args: list[str], project_root: Path) -> None:
-    """Show live file changes in agent worktrees."""
-    from rich.panel import Panel
-    from crew.git import run_git, GitError
-
-    # Get agents that have worktrees
-    agents_with_work = [a for a in state.agents.values()
-                        if a.worktree and a.status in ("ready", "working")]
-
-    if not agents_with_work:
-        print_info("No agents actively working")
-        return
-
-    colors = ["cyan", "green", "yellow", "magenta", "blue", "red"]
-
-    for i, agent in enumerate(agents_with_work):
-        color = colors[i % len(colors)]
-
-        # Get git status in worktree
-        try:
-            status = run_git("status", "--short", cwd=agent.worktree)
-            diff_stat = run_git("diff", "--stat", "HEAD", cwd=agent.worktree)
-        except GitError:
-            status = "[dim]Unable to read worktree[/dim]"
-            diff_stat = ""
-
-        # Get recent commits
-        try:
-            commits = run_git("log", "--oneline", "-3", cwd=agent.worktree)
-        except GitError:
-            commits = ""
-
-        header = f"● {agent.name} → {agent.task or 'no task'}"
-
-        content_parts = []
-        if status.strip():
-            content_parts.append(f"[bold]Changes:[/bold]\n{status}")
-        if diff_stat.strip():
-            content_parts.append(f"[bold]Diff:[/bold]\n{diff_stat}")
-        if commits.strip():
-            content_parts.append(f"[bold]Recent commits:[/bold]\n{commits}")
-
-        content = "\n\n".join(content_parts) if content_parts else "[dim]No changes yet[/dim]"
-
-        console.print(Panel(
-            content,
-            title=f"[bold {color}]{header}[/bold {color}]",
-            border_style=color,
-            padding=(0, 1),
-        ))
-
-
 def cmd_ps(state, args: list[str]) -> None:
     """Show all running claude processes."""
     import subprocess as sp
@@ -648,56 +573,6 @@ def cmd_ps(state, args: list[str]) -> None:
 
     except Exception as e:
         print_error(f"Failed to get processes: {e}")
-
-
-def cmd_sniff(state, args: list[str], project_root: Path) -> None:
-    """Show tail of all running agents' logs."""
-    from rich.panel import Panel
-    from rich.text import Text
-
-    # Get agents that are working or have work
-    active = [a for a in state.agents.values() if a.status in ("ready", "working", "done")]
-
-    if not active:
-        print_info("No active agents to sniff")
-        return
-
-    # Color cycle for agents
-    colors = ["cyan", "green", "yellow", "magenta", "blue", "red"]
-
-    for i, agent in enumerate(active):
-        color = colors[i % len(colors)]
-        content = read_log_tail(agent.name, lines=15, project_root=project_root)
-
-        # Build header with status
-        status_icon = {
-            "ready": "◐",
-            "working": "●",
-            "done": "✓",
-        }.get(agent.status, "?")
-
-        header = f"{status_icon} {agent.name}"
-        if agent.task:
-            header += f" → {agent.task}"
-        header += f" (step {agent.step_count})"
-
-        if content:
-            # Truncate long lines
-            lines = content.split("\n")
-            truncated = "\n".join(line[:100] + "..." if len(line) > 100 else line for line in lines[-15:])
-            console.print(Panel(
-                truncated,
-                title=f"[bold {color}]{header}[/bold {color}]",
-                border_style=color,
-                padding=(0, 1),
-            ))
-        else:
-            console.print(Panel(
-                "[dim]No output yet[/dim]",
-                title=f"[bold {color}]{header}[/bold {color}]",
-                border_style=color,
-                padding=(0, 1),
-            ))
 
 
 def cmd_logs(state, args: list[str], project_root: Path) -> None:
@@ -976,8 +851,6 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         print_help()
     elif cmd in ("dashboard", "d", "s"):
         cmd_dashboard(state, args, project_root)
-    elif cmd == "status":
-        cmd_status(state, args, project_root)
     elif cmd == "spawn":
         cmd_spawn(state, args, project_root)
     elif cmd == "step":
@@ -988,12 +861,8 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_stop(state, args)
     elif cmd == "ps":
         cmd_ps(state, args)
-    elif cmd == "watch":
-        cmd_watch(state, args, project_root)
     elif cmd == "peek":
         cmd_peek(state, args, project_root)
-    elif cmd == "sniff":
-        cmd_sniff(state, args, project_root)
     elif cmd == "logs":
         cmd_logs(state, args, project_root)
     elif cmd == "kill":
