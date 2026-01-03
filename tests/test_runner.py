@@ -13,13 +13,17 @@ import pytest
 from crew.agent import Agent
 from crew.runner import (
     assign_task,
+    check_work_completed,
     complete_task,
+    find_claude_process,
     is_done,
+    kill_claude_process,
     run_claude,
+    shutdown_agent,
     spawn_worker,
     step_agent,
 )
-from crew.state import State
+from crew.state import State, save_state, load_state
 
 
 class TestRunClaude:
@@ -689,3 +693,326 @@ class TestTokenAccumulation:
             assert agent.total_input_tokens == 100
             assert agent.total_output_tokens == 50
             assert agent.total_cost_usd == pytest.approx(0.01)
+
+
+class TestFindClaudeProcess:
+    """Tests for find_claude_process function."""
+
+    def test_find_process_by_session_id(self):
+        """find_claude_process finds process by session ID."""
+        agent = Agent(
+            name="test",
+            session="abc-123-def",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+        )
+
+        ps_output = """PID COMMAND
+1234 claude --print --session-id abc-123-def -p prompt
+5678 node something else
+"""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=ps_output, stderr="")
+            pid = find_claude_process(agent)
+
+        assert pid == 1234
+
+    def test_find_process_by_worktree_path(self):
+        """find_claude_process finds process by worktree path."""
+        agent = Agent(
+            name="test",
+            session="different-session",
+            worktree=Path("/tmp/agents/myworktree"),
+            branch="test-branch",
+        )
+
+        ps_output = """PID COMMAND
+1234 claude --print /tmp/agents/myworktree -p prompt
+5678 node something else
+"""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=ps_output, stderr="")
+            pid = find_claude_process(agent)
+
+        assert pid == 1234
+
+    def test_find_process_returns_none_when_not_found(self):
+        """find_claude_process returns None when no matching process."""
+        agent = Agent(
+            name="test",
+            session="no-match",
+            worktree=Path("/tmp/no-match"),
+            branch="test-branch",
+        )
+
+        ps_output = """PID COMMAND
+1234 claude --print --session-id other-session -p prompt
+5678 node something else
+"""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=ps_output, stderr="")
+            pid = find_claude_process(agent)
+
+        assert pid is None
+
+    def test_find_process_handles_exception(self):
+        """find_claude_process returns None on exception."""
+        agent = Agent(
+            name="test",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+        )
+
+        with patch("subprocess.run", side_effect=Exception("ps failed")):
+            pid = find_claude_process(agent)
+
+        assert pid is None
+
+
+class TestKillClaudeProcess:
+    """Tests for kill_claude_process function."""
+
+    def test_kill_process_success(self):
+        """kill_claude_process returns True when process is killed."""
+        agent = Agent(
+            name="test",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+        )
+
+        with patch("crew.runner.find_claude_process", return_value=1234):
+            with patch("os.kill") as mock_kill:
+                result = kill_claude_process(agent)
+
+        assert result is True
+        mock_kill.assert_called_once()
+
+    def test_kill_process_not_found(self):
+        """kill_claude_process returns False when no process found."""
+        agent = Agent(
+            name="test",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+        )
+
+        with patch("crew.runner.find_claude_process", return_value=None):
+            result = kill_claude_process(agent)
+
+        assert result is False
+
+    def test_kill_process_already_gone(self):
+        """kill_claude_process returns False when process already gone."""
+        agent = Agent(
+            name="test",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+        )
+
+        with patch("crew.runner.find_claude_process", return_value=1234):
+            with patch("os.kill", side_effect=ProcessLookupError):
+                result = kill_claude_process(agent)
+
+        assert result is False
+
+
+class TestCheckWorkCompleted:
+    """Tests for check_work_completed function."""
+
+    def test_returns_done_when_done_in_logs(self, project_root: Path):
+        """check_work_completed returns 'done' when DONE found in logs."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            step_count=5,
+        )
+
+        log_content = """=== CREW LOG ===
+Agent: test-agent
+Time: 2026-01-01T12:00:00
+Step: 5
+Prompt: Continue
+Session: test-session
+---
+I have completed the task.
+
+DONE
+=== END ===
+"""
+        with patch("crew.runner.read_latest_log", return_value=log_content):
+            result = check_work_completed(agent, project_root)
+
+        assert result == "done"
+
+    def test_returns_partial_when_steps_but_no_done(self, project_root: Path):
+        """check_work_completed returns 'partial' when steps taken but no DONE."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            step_count=3,
+        )
+
+        log_content = """=== CREW LOG ===
+Agent: test-agent
+Time: 2026-01-01T12:00:00
+Step: 3
+Prompt: Continue
+Session: test-session
+---
+Still working on this...
+=== END ===
+"""
+        with patch("crew.runner.read_latest_log", return_value=log_content):
+            result = check_work_completed(agent, project_root)
+
+        assert result == "partial"
+
+    def test_returns_nothing_when_no_logs(self, project_root: Path):
+        """check_work_completed returns 'nothing' when no logs found."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            step_count=0,
+        )
+
+        with patch("crew.runner.read_latest_log", return_value=None):
+            result = check_work_completed(agent, project_root)
+
+        assert result == "nothing"
+
+
+class TestShutdownAgent:
+    """Tests for shutdown_agent function."""
+
+    def test_shutdown_marks_done_when_work_completed(self, project_root: Path):
+        """shutdown_agent sets status to 'done' when work is complete."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="working",
+            step_count=5,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        with patch("crew.runner.kill_claude_process", return_value=True):
+            with patch("crew.runner.check_work_completed", return_value="done"):
+                result = shutdown_agent(agent, state, project_root)
+
+        assert result == "done"
+        assert agent.status == "done"
+
+    def test_shutdown_keeps_working_when_partial(self, project_root: Path):
+        """shutdown_agent keeps status as 'working' for partial work."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="working",
+            step_count=3,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        with patch("crew.runner.kill_claude_process", return_value=True):
+            with patch("crew.runner.check_work_completed", return_value="partial"):
+                result = shutdown_agent(agent, state, project_root)
+
+        assert result == "partial"
+        assert agent.status == "working"
+
+    def test_shutdown_resets_to_ready_when_nothing(self, project_root: Path):
+        """shutdown_agent resets status to 'ready' when no work done."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="working",
+            step_count=0,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        with patch("crew.runner.kill_claude_process", return_value=True):
+            with patch("crew.runner.check_work_completed", return_value="nothing"):
+                result = shutdown_agent(agent, state, project_root)
+
+        assert result == "nothing"
+        assert agent.status == "ready"
+
+    def test_shutdown_saves_state(self, project_root: Path):
+        """shutdown_agent saves state after reconciliation."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="working",
+            step_count=5,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        with patch("crew.runner.kill_claude_process", return_value=True):
+            with patch("crew.runner.check_work_completed", return_value="done"):
+                shutdown_agent(agent, state, project_root)
+
+        # Reload state and verify it was saved
+        loaded_state = load_state(project_root)
+        loaded_agent = loaded_state.get_agent("test-agent")
+        assert loaded_agent is not None
+        assert loaded_agent.status == "done"
+
+    def test_shutdown_works_without_process(self, project_root: Path):
+        """shutdown_agent works even if no process is running."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="working",
+            step_count=3,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        with patch("crew.runner.kill_claude_process", return_value=False):
+            with patch("crew.runner.check_work_completed", return_value="partial"):
+                result = shutdown_agent(agent, state, project_root)
+
+        assert result == "partial"
+        assert agent.status == "working"
+
+    def test_shutdown_does_not_change_stuck_status_on_partial(self, project_root: Path):
+        """shutdown_agent preserves 'stuck' status for partial work."""
+        agent = Agent(
+            name="test-agent",
+            session="test-session",
+            worktree=Path("/tmp/test"),
+            branch="test-branch",
+            status="stuck",
+            step_count=20,
+        )
+        state = State()
+        state.add_agent(agent)
+
+        with patch("crew.runner.kill_claude_process", return_value=True):
+            with patch("crew.runner.check_work_completed", return_value="partial"):
+                result = shutdown_agent(agent, state, project_root)
+
+        assert result == "partial"
+        # stuck status should be preserved
+        assert agent.status == "stuck"
