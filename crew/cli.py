@@ -1521,6 +1521,9 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_reset(state, args, project_root)
     elif cmd == "clean":
         cmd_clean(state, args, project_root)
+    elif cmd == "tui":
+        from crew.tui import main as tui_main
+        tui_main()
     else:
         print_error(f"Unknown command: {cmd}. Type 'help' for commands.")
 
@@ -1677,17 +1680,17 @@ def recover_session(state, project_root: Path) -> bool:
                     actions_taken.append(f"Failed to complete {agent.name}: {e}")
             else:
                 # Worktree gone but agent marked done - reset to idle
-                # Can't run tests without worktree, so can't safely auto-merge
-                # User can manually merge the branch if work was committed
+                # Can't verify work or run tests without worktree, so can't safely auto-merge
+                # Operator can manually find the branch and merge if work was committed
                 console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done, worktree missing)[/dim]")
                 agent.status = "idle"
+                agent.task = None
                 agent.worktree = None
                 agent.branch = ""
-                agent.task = None
                 agent.session = ""
                 agent.step_count = 0
                 agent.last_step_at = None
-                actions_taken.append(f"Reset {agent.name} to idle (worktree missing, cannot verify work)")
+                actions_taken.append(f"Reset {agent.name} to idle (done but worktree missing)")
         elif agent.status == "stuck":
             console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](stuck)[/dim]")
         else:

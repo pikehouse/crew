@@ -1069,8 +1069,8 @@ class TestRecoverSession:
     def test_recover_session_resets_done_agent_with_missing_worktree(self, project_root: Path, capsys):
         """Test recover_session resets done agents with missing worktree to idle.
 
-        Can't run tests without worktree, so can't safely auto-merge.
-        User can manually merge the branch if work was committed.
+        Can't verify work or run tests without worktree, so can't safely auto-merge.
+        The operator can manually find the branch and merge if work was committed.
         """
         state = State()
         agent = Agent(
@@ -1090,7 +1090,7 @@ class TestRecoverSession:
         captured = capsys.readouterr()
         assert "done-agent" in captured.out
         assert "worktree missing" in captured.out
-        # Agent reset to idle - can't merge without worktree to run tests
+        # Agent reset to idle - can't verify work or run tests without worktree
         assert agent.status == "idle"
         assert agent.task is None
 

@@ -1,6 +1,6 @@
 ---
 id: c-bce4
-status: open
+status: closed
 deps: [c-2716]
 created: 2026-01-04T18:14:34Z
 type: task
