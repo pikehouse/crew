@@ -93,13 +93,17 @@ def fetch_tickets() -> list[dict[str, Any]]:
     """
     try:
         result = subprocess.run(
-            ["tk", "query", "--json"],
+            ["tk", "query"],
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
             return []
-        return json.loads(result.stdout) if result.stdout.strip() else []
+        # tk query outputs JSONL (one JSON object per line)
+        if not result.stdout.strip():
+            return []
+        lines = result.stdout.strip().split('\n')
+        return [json.loads(line) for line in lines if line.strip()]
     except (FileNotFoundError, json.JSONDecodeError):
         return []
 
