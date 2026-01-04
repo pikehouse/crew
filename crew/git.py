@@ -121,3 +121,37 @@ def get_worktree_list() -> list[dict]:
         worktrees.append(current)
 
     return worktrees
+
+
+def is_merge_in_progress(cwd: Path | None = None) -> bool:
+    """Check if a merge is currently in progress."""
+    cwd = cwd or Path.cwd()
+    git_dir = cwd / ".git"
+    # Handle worktrees where .git is a file pointing to the actual git dir
+    if git_dir.is_file():
+        content = git_dir.read_text().strip()
+        if content.startswith("gitdir: "):
+            git_dir = Path(content[8:])
+    return (git_dir / "MERGE_HEAD").exists()
+
+
+def get_conflicted_files(cwd: Path | None = None) -> list[str]:
+    """Get list of files with merge conflicts.
+
+    Returns list of file paths that have unmerged changes (conflict markers).
+    """
+    try:
+        status = run_git("status", "--porcelain", cwd=cwd)
+        conflicted = []
+        for line in status.split("\n"):
+            if line.startswith("UU ") or line.startswith("AA "):
+                # UU = both modified, AA = both added
+                conflicted.append(line[3:])
+        return conflicted
+    except GitError:
+        return []
+
+
+def abort_merge(cwd: Path | None = None) -> None:
+    """Abort the current merge operation."""
+    run_git("merge", "--abort", cwd=cwd)

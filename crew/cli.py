@@ -33,9 +33,9 @@ from crew.display import (
     print_git_status_panels,
     get_status_icon,
 )
-from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks, shutdown_agent, find_claude_process
+from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks, shutdown_agent, find_claude_process, resolve_merge_conflicts
 from crew.crew_logging import read_log_tail, read_all_logs
-from crew.git import get_worktree_list, has_uncommitted_changes, remove_worktree
+from crew.git import get_worktree_list, has_uncommitted_changes, remove_worktree, is_merge_in_progress, get_conflicted_files, abort_merge
 
 console = Console()
 
@@ -1119,6 +1119,63 @@ def cmd_merge(state, args: list[str], project_root: Path) -> None:
         print_error(f"Merge failed: {e}")
 
 
+def cmd_resolve(state, args: list[str], project_root: Path) -> None:
+    """Auto-resolve merge conflicts using Claude.
+
+    When a git merge fails due to conflicts, this command uses Claude to analyze
+    the conflicting files, generate resolutions that combine both versions, and
+    complete the merge.
+    """
+    # Check if there's a merge in progress
+    if not is_merge_in_progress(project_root):
+        print_error("No merge in progress. Start a merge first with 'git merge <branch>'")
+        return
+
+    # Get list of conflicted files
+    conflicted = get_conflicted_files(project_root)
+    if not conflicted:
+        print_info("No conflicts detected. The merge can be completed normally.")
+        return
+
+    # Show the user what we're working with
+    console.print(f"\n[bold]Found {len(conflicted)} conflicted file(s):[/bold]")
+    for f in conflicted:
+        console.print(f"  [red]•[/red] {f}")
+    console.print()
+
+    # Ask for confirmation unless --yes flag is provided
+    if "--yes" not in args and "-y" not in args:
+        console.print("[bold]Resolve conflicts using Claude?[/bold] This will:")
+        console.print("  1. Analyze each conflicted file")
+        console.print("  2. Combine both versions intelligently")
+        console.print("  3. Remove conflict markers and commit the resolution")
+        console.print()
+        try:
+            response = input("Proceed? [y/N] ").strip().lower()
+            if response not in ("y", "yes"):
+                print_info("Aborted. Conflicts remain unresolved.")
+                return
+        except (KeyboardInterrupt, EOFError):
+            print()
+            print_info("Aborted.")
+            return
+
+    # Use Claude to resolve conflicts
+    console.print("\n[bold]Resolving conflicts with Claude...[/bold]")
+    with console.status("[bold]Claude is analyzing and resolving conflicts...[/bold]", spinner="dots"):
+        success = resolve_merge_conflicts(project_root)
+
+    if success:
+        console.print("\n[bold green]✓[/bold green] Conflicts resolved successfully!")
+        console.print("  The merge has been completed with both sets of changes combined.")
+    else:
+        console.print("\n[bold red]✗[/bold red] Failed to resolve conflicts automatically.")
+        console.print("  You can:")
+        console.print("    • Try again with 'resolve'")
+        console.print("    • Resolve manually and run 'git add . && git commit'")
+        console.print("    • Abort the merge with 'git merge --abort'")
+
+
 def cmd_ready(state, args: list[str]) -> None:
     """Show ready tickets with agent assignment indicators."""
     output = run_tk("ready")
@@ -1778,6 +1835,8 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_cleanup(state, args, project_root)
     elif cmd == "merge":
         cmd_merge(state, args, project_root)
+    elif cmd == "resolve":
+        cmd_resolve(state, args, project_root)
     elif cmd in ("r", "ready"):
         cmd_ready(state, args)
     elif cmd == "new":
