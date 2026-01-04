@@ -510,9 +510,17 @@ def complete_task(
 
     # Tests passed - proceed with merge
 
-    # Close the ticket
+    # Close the ticket and commit the change
     if agent.task:
         close_ticket(agent.task)
+        # Commit the ticket close change so it's part of git history
+        ticket_file = project_root / ".tickets" / f"{agent.task}.md"
+        if ticket_file.exists():
+            run_git("add", str(ticket_file), cwd=project_root)
+            run_git(
+                "commit", "-m", f"Close ticket {agent.task}",
+                cwd=project_root
+            )
 
     # Store branch name before removing worktree
     branch_to_merge = agent.branch
