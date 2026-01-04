@@ -35,6 +35,11 @@ class TicketData:
     status: str
     deps: list[str]
     wave: int  # -1 = blocked/cyclic, 0 = ready, 1+ = later waves
+    description: str = ""
+    assignee: str = ""
+    created: str = ""
+    ticket_type: str = ""
+    priority: int = 0
 
 
 def compute_waves(tickets: dict[str, dict[str, Any]]) -> dict[str, int]:
@@ -108,6 +113,30 @@ def fetch_tickets() -> list[dict[str, Any]]:
         return [json.loads(line) for line in lines if line.strip()]
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+
+
+def make_ticket_data(ticket: dict[str, Any], wave: int) -> TicketData:
+    """Create a TicketData from a ticket dictionary.
+
+    Args:
+        ticket: Ticket dict from tk query.
+        wave: Wave number for the ticket.
+
+    Returns:
+        TicketData instance with all fields populated.
+    """
+    return TicketData(
+        id=ticket.get("id", ""),
+        title=ticket.get("title", ""),
+        status=ticket.get("status", ""),
+        deps=ticket.get("deps", []),
+        wave=wave,
+        description=ticket.get("description", ""),
+        assignee=ticket.get("assignee", ""),
+        created=ticket.get("created", ""),
+        ticket_type=ticket.get("type", ""),
+        priority=ticket.get("priority", 0),
+    )
 
 
 class TicketTree(Tree[TicketData]):
@@ -214,13 +243,7 @@ class TicketTree(Tree[TicketData]):
         main_label.append(f" {title}", style="bold")
         main_label.append(f" [{status}]", style=status_style)
 
-        main_data = TicketData(
-            id=zoomed_ticket,
-            title=title,
-            status=status,
-            deps=deps,
-            wave=0,
-        )
+        main_data = make_ticket_data(t, wave=0)
         main_node = self.root.add(main_label, data=main_data)
         main_node.expand()
 
@@ -244,13 +267,7 @@ class TicketTree(Tree[TicketData]):
                     label.append(f" {dep_title}", style=dep_style)
                     label.append(f" [{dep_status}]", style="dim")
 
-                    dep_data = TicketData(
-                        id=dep_id,
-                        title=dep_title,
-                        status=dep_status,
-                        deps=dep_deps,
-                        wave=0,
-                    )
+                    dep_data = make_ticket_data(dep_t, wave=0)
                     node = deps_node.add(label, data=dep_data)
                     node.allow_expand = False
                 else:
@@ -277,7 +294,6 @@ class TicketTree(Tree[TicketData]):
                 dep_t = tickets[dep_id]
                 dep_title = dep_t.get("title", dep_id)
                 dep_status = dep_t.get("status", "")
-                dep_deps = dep_t.get("deps", [])
 
                 dep_style = "dim" if dep_status != "open" else ""
                 label = Text()
@@ -285,13 +301,7 @@ class TicketTree(Tree[TicketData]):
                 label.append(f" {dep_title}", style=dep_style)
                 label.append(f" [{dep_status}]", style="dim")
 
-                dep_data = TicketData(
-                    id=dep_id,
-                    title=dep_title,
-                    status=dep_status,
-                    deps=dep_deps,
-                    wave=0,
-                )
+                dep_data = make_ticket_data(dep_t, wave=0)
                 node = dependents_node.add(label, data=dep_data)
                 node.allow_expand = False
 
@@ -328,13 +338,7 @@ class TicketTree(Tree[TicketData]):
             for tid in sorted(wave_tickets[0]):
                 t = tickets[tid]
                 title = t.get("title", tid)
-                ticket_data = TicketData(
-                    id=tid,
-                    title=title,
-                    status=t.get("status", ""),
-                    deps=t.get("deps", []),
-                    wave=0,
-                )
+                ticket_data = make_ticket_data(t, wave=0)
                 label = Text()
                 label.append(tid, style="cyan")
                 label.append(f" {title}")
@@ -353,13 +357,7 @@ class TicketTree(Tree[TicketData]):
                 title = t.get("title", tid)
                 deps = t.get("deps", [])
                 open_deps = [d for d in deps if d in tickets and tickets[d].get("status") == "open"]
-                ticket_data = TicketData(
-                    id=tid,
-                    title=title,
-                    status=t.get("status", ""),
-                    deps=deps,
-                    wave=1,
-                )
+                ticket_data = make_ticket_data(t, wave=1)
                 label = Text()
                 label.append(tid, style="cyan")
                 label.append(f" {title}")
@@ -381,13 +379,7 @@ class TicketTree(Tree[TicketData]):
                     title = t.get("title", tid)
                     deps = t.get("deps", [])
                     open_deps = [d for d in deps if d in tickets and tickets[d].get("status") == "open"]
-                    ticket_data = TicketData(
-                        id=tid,
-                        title=title,
-                        status=t.get("status", ""),
-                        deps=deps,
-                        wave=wave,
-                    )
+                    ticket_data = make_ticket_data(t, wave=wave)
                     label = Text()
                     label.append(tid, style="cyan")
                     label.append(f" {title}")
@@ -407,13 +399,7 @@ class TicketTree(Tree[TicketData]):
                 title = t.get("title", tid)
                 deps = t.get("deps", [])
                 open_deps = [d for d in deps if d in tickets and tickets[d].get("status") == "open"]
-                ticket_data = TicketData(
-                    id=tid,
-                    title=title,
-                    status=t.get("status", ""),
-                    deps=deps,
-                    wave=-1,
-                )
+                ticket_data = make_ticket_data(t, wave=-1)
                 label = Text()
                 label.append(tid, style="cyan")
                 label.append(f" {title}")
@@ -431,13 +417,7 @@ class TicketTree(Tree[TicketData]):
             for tid in sorted(closed_tickets):
                 t = tickets[tid]
                 title = t.get("title", tid)
-                ticket_data = TicketData(
-                    id=tid,
-                    title=title,
-                    status="closed",
-                    deps=t.get("deps", []),
-                    wave=-2,  # Special value for closed
-                )
+                ticket_data = make_ticket_data(t, wave=-2)
                 label = Text()
                 label.append(tid, style="dim cyan")
                 label.append(f" {title}", style="dim")
@@ -598,6 +578,103 @@ class MergeConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class TicketDetailsScreen(ModalScreen[None]):
+    """Modal screen displaying full ticket details."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("enter", "close", "Close"),
+        Binding("q", "close", "Close"),
+    ]
+
+    DEFAULT_CSS = """
+    TicketDetailsScreen {
+        align: center middle;
+    }
+
+    TicketDetailsScreen > Vertical {
+        width: 70;
+        height: auto;
+        max-height: 80%;
+        background: $surface;
+        border: thick $primary;
+        padding: 1 2;
+    }
+
+    TicketDetailsScreen > Vertical > Static {
+        width: 100%;
+        margin-bottom: 1;
+    }
+
+    TicketDetailsScreen > Vertical > #ticket-title {
+        text-style: bold;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    TicketDetailsScreen > Vertical > #ticket-meta {
+        color: $text-muted;
+    }
+
+    TicketDetailsScreen > Vertical > #ticket-description {
+        margin-top: 1;
+        padding: 1;
+        background: $surface-darken-1;
+    }
+
+    TicketDetailsScreen > Vertical > #close-hint {
+        margin-top: 1;
+        text-align: center;
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, ticket_data: TicketData) -> None:
+        """Initialize the ticket details screen.
+
+        Args:
+            ticket_data: The ticket data to display.
+        """
+        super().__init__()
+        self.ticket_data = ticket_data
+
+    def compose(self) -> ComposeResult:
+        """Compose the ticket details dialog."""
+        t = self.ticket_data
+        with Vertical():
+            # Title
+            yield Static(f"[bold cyan]{t.id}[/bold cyan] {t.title}", id="ticket-title")
+
+            # Metadata
+            meta_lines = []
+            meta_lines.append(f"[bold]Status:[/bold] {t.status}")
+            if t.assignee:
+                meta_lines.append(f"[bold]Assignee:[/bold] {t.assignee}")
+            if t.created:
+                meta_lines.append(f"[bold]Created:[/bold] {t.created}")
+            if t.ticket_type:
+                meta_lines.append(f"[bold]Type:[/bold] {t.ticket_type}")
+            if t.priority:
+                meta_lines.append(f"[bold]Priority:[/bold] {t.priority}")
+            if t.deps:
+                meta_lines.append(f"[bold]Dependencies:[/bold] {', '.join(t.deps)}")
+            else:
+                meta_lines.append("[bold]Dependencies:[/bold] None")
+
+            yield Static("\n".join(meta_lines), id="ticket-meta")
+
+            # Description
+            if t.description:
+                yield Static(f"[bold]Description:[/bold]\n{t.description}", id="ticket-description")
+
+            # Close hint
+            yield Static("[dim]Press Enter, Esc, or q to close[/dim]", id="close-hint")
+
+    def action_close(self) -> None:
+        """Close the details screen."""
+        self.dismiss(None)
+
+
 class CrewApp(App):
     """A Textual app for managing crew agents."""
 
@@ -608,7 +685,7 @@ class CrewApp(App):
         Binding("R", "refresh", "Refresh"),
         Binding("t", "toggle_view", "Toggle View"),
         Binding("m", "merge_agent", "Merge"),
-        Binding("enter", "zoom_in", "Zoom In", show=False),
+        Binding("enter", "zoom_in", "Details", show=False),
         Binding("question_mark", "toggle_help", "Help"),
     ]
 
@@ -671,7 +748,7 @@ class CrewApp(App):
             ("s", "Stop the background runner"),
             ("R", "Refresh views"),
             ("t", "Toggle agents/tickets view"),
-            ("Enter", "Zoom into selected ticket"),
+            ("Enter", "Show ticket details"),
         ]
         with Center(id="help-overlay-container"):
             with Middle():
@@ -817,7 +894,7 @@ class CrewApp(App):
             tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
 
     def action_zoom_in(self) -> None:
-        """Zoom into the selected ticket to show its dependency tree."""
+        """Show the details panel for the selected ticket."""
         if self._show_agents:
             return  # Only works in ticket view
 
@@ -831,9 +908,8 @@ class CrewApp(App):
         if ticket_data is None:
             return  # Category node selected, not a ticket
 
-        # Zoom into this ticket
-        self._zoomed_ticket = ticket_data.id
-        tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
+        # Show the ticket details panel
+        self.push_screen(TicketDetailsScreen(ticket_data))
 
     def action_toggle_help(self) -> None:
         """Toggle the help overlay visibility."""
