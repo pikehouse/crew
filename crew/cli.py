@@ -1681,8 +1681,13 @@ def recover_session(state, project_root: Path) -> bool:
                 # User can manually merge the branch if work was committed
                 console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done, worktree missing)[/dim]")
                 agent.status = "idle"
+                agent.worktree = None
+                agent.branch = ""
                 agent.task = None
-                actions_taken.append(f"Reset {agent.name} to idle (worktree missing, branch preserved)")
+                agent.session = ""
+                agent.step_count = 0
+                agent.last_step_at = None
+                actions_taken.append(f"Reset {agent.name} to idle (worktree missing, cannot verify work)")
         elif agent.status == "stuck":
             console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](stuck)[/dim]")
         else:
