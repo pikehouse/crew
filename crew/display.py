@@ -197,6 +197,7 @@ def print_help() -> None:
   [cyan]ps[/cyan]               Show running claude processes
   [cyan]peek[/cyan] <name>       Show agent's recent output (after step completes)
   [cyan]logs[/cyan] <name>       Show log directory
+  [cyan]summarize[/cyan] <name>  Generate AI summary of agent's work
   [cyan]kill[/cyan] <name>       Stop agent, keep worktree
   [cyan]cleanup[/cyan] <name>    Remove agent and worktree
   [cyan]merge[/cyan] <name>      Merge agent's branch to main
