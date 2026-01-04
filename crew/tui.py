@@ -480,7 +480,9 @@ class CrewApp(App):
 
     BINDINGS = [
         Binding("q", "quit_or_unzoom", "Quit/Unzoom"),
-        Binding("r", "refresh", "Refresh"),
+        Binding("r", "run_runner", "Run"),
+        Binding("s", "stop_runner", "Stop"),
+        Binding("R", "refresh", "Refresh"),
         Binding("t", "toggle_view", "Toggle View"),
         Binding("enter", "zoom_in", "Zoom In", show=False),
     ]
@@ -601,6 +603,41 @@ class CrewApp(App):
         tree = self.query_one("#ticket-tree", TicketTree)
         self._refresh_agents(table)
         tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
+
+    def action_run_runner(self) -> None:
+        """Start the BackgroundRunner if available and not running."""
+        if not self._runner:
+            event_log = self.query_one("#event-log", EventLog)
+            event_log.add_event("[yellow]![/yellow] No runner available")
+            return
+
+        if self._runner.is_running:
+            event_log = self.query_one("#event-log", EventLog)
+            event_log.add_event("[dim]Already running[/dim]")
+            return
+
+        started = self._runner.start()
+        event_log = self.query_one("#event-log", EventLog)
+        if started:
+            event_log.add_event("[green]▶[/green] Runner started")
+        else:
+            event_log.add_event("[yellow]![/yellow] Failed to start runner")
+
+    def action_stop_runner(self) -> None:
+        """Stop the BackgroundRunner if running."""
+        if not self._runner:
+            event_log = self.query_one("#event-log", EventLog)
+            event_log.add_event("[yellow]![/yellow] No runner available")
+            return
+
+        if not self._runner.is_running:
+            event_log = self.query_one("#event-log", EventLog)
+            event_log.add_event("[dim]Not running[/dim]")
+            return
+
+        self._runner.stop()
+        event_log = self.query_one("#event-log", EventLog)
+        event_log.add_event("[blue]■[/blue] Runner stopped")
 
     def action_toggle_view(self) -> None:
         """Toggle between agents and tickets view."""
