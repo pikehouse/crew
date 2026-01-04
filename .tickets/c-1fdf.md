@@ -1,6 +1,6 @@
 ---
 id: c-1fdf
-status: open
+status: closed
 deps: []
 created: 2026-01-04T19:27:22Z
 type: task

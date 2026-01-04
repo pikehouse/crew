@@ -1881,7 +1881,7 @@ def recover_session(state, project_root: Path) -> bool:
                         task_id = agent.task
                         branch = agent.branch
                         try:
-                            complete_task(agent, state, project_root)
+                            complete_task(agent, state, project_root, console=console)
                             actions_taken.append(f"Completed {agent.name} (merged {branch}, closed {task_id})")
                         except Exception as e:
                             actions_taken.append(f"Failed to complete {agent.name}: {e}")
@@ -1920,15 +1920,16 @@ def recover_session(state, project_root: Path) -> bool:
                 task_id = agent.task
                 branch = agent.branch
                 try:
-                    complete_task(agent, state, project_root)
+                    complete_task(agent, state, project_root, console=console)
                     actions_taken.append(f"Completed {agent.name} (merged {branch}, closed {task_id})")
                 except Exception as e:
                     actions_taken.append(f"Failed to complete {agent.name}: {e}")
             else:
                 # Worktree gone but agent marked done - preserve done status
-                # Work is committed to the branch, operator can merge via 'merge <name>'
+                # Work is committed to the branch and can be merged via 'merge <name>' command
                 console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done, worktree missing)[/dim]")
                 console.print(f"    [dim]Work is on branch {agent.branch}. Use 'merge {agent.name}' to complete.[/dim]")
+                actions_taken.append(f"Preserved {agent.name} as done (use 'merge {agent.name}' to complete)")
         elif agent.status == "stuck":
             console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](stuck)[/dim]")
         else:

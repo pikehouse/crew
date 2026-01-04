@@ -521,6 +521,7 @@ def complete_task(
     agent: Agent,
     state: State,
     project_root: Path | None = None,
+    console=None,
 ) -> tuple[bool, str | None]:
     """Complete an agent's task - run tests, merge, cleanup worktree, return to idle.
 
@@ -531,6 +532,7 @@ def complete_task(
         agent: The agent that completed its task
         state: Current state
         project_root: Project root path
+        console: Optional rich Console for displaying status spinners
 
     Returns:
         Tuple of (success: bool, test_output: str | None)
@@ -544,7 +546,11 @@ def complete_task(
 
     # Run tests FIRST (before removing worktree)
     if worktree_path:
-        tests_passed, test_output = run_tests_in_worktree(worktree_path)
+        if console:
+            with console.status(f"[bold]Running tests for {agent.name}...[/bold]", spinner="dots"):
+                tests_passed, test_output = run_tests_in_worktree(worktree_path)
+        else:
+            tests_passed, test_output = run_tests_in_worktree(worktree_path)
         if not tests_passed:
             # Tests failed - set agent back to working so it can fix the issues
             agent.status = "working"
@@ -562,32 +568,40 @@ def complete_task(
     # Store branch name before removing worktree
     branch_to_merge = agent.branch
 
-    # FIRST: Remove worktree (so the branch is no longer checked out)
-    if worktree_path:
-        remove_worktree(worktree_path)
+    # Helper function for merge operations
+    def do_merge():
+        # FIRST: Remove worktree (so the branch is no longer checked out)
+        if worktree_path:
+            remove_worktree(worktree_path)
 
-    # THEN: Merge the branch from main
-    run_git("checkout", "main", cwd=project_root)
+        # THEN: Merge the branch from main
+        run_git("checkout", "main", cwd=project_root)
 
-    # Try the merge
-    try:
-        merge_branch(
-            branch_to_merge,
-            message=format_crew_merge_message(agent),
-            cwd=project_root,
-        )
-    except Exception as e:
-        # Merge failed - likely conflicts. Try to resolve with Claude.
-        if resolve_merge_conflicts(project_root):
-            # Conflicts resolved successfully
-            pass
-        else:
-            # Claude couldn't resolve - abort and report
-            try:
-                run_git("merge", "--abort", cwd=project_root)
-            except:
+        # Try the merge
+        try:
+            merge_branch(
+                branch_to_merge,
+                message=format_crew_merge_message(agent),
+                cwd=project_root,
+            )
+        except Exception as e:
+            # Merge failed - likely conflicts. Try to resolve with Claude.
+            if resolve_merge_conflicts(project_root):
+                # Conflicts resolved successfully
                 pass
-            raise RuntimeError(f"Merge failed and auto-resolution failed: {e}")
+            else:
+                # Claude couldn't resolve - abort and report
+                try:
+                    run_git("merge", "--abort", cwd=project_root)
+                except:
+                    pass
+                raise RuntimeError(f"Merge failed and auto-resolution failed: {e}")
+
+    if console:
+        with console.status(f"[bold]Merging {agent.name} ({branch_to_merge})...[/bold]", spinner="dots"):
+            do_merge()
+    else:
+        do_merge()
 
     # Delete the branch
     try:
