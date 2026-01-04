@@ -1329,13 +1329,14 @@ def cmd_queue(state, args: list[str]) -> None:
     console.print(f"[dim]{total} open tickets: {ready} ready, {total - ready - blocked} pending, {blocked} blocked[/dim]")
 
 
-def render_dashboard(state, project_root: Path, runner_active: bool = False) -> "Group":
+def render_dashboard(state, project_root: Path, runner_active: bool = False, show_summaries: bool = False) -> "Group":
     """Render dashboard content as a Rich renderable.
 
     Args:
         state: Current crew state
         project_root: Project root path
         runner_active: Whether the background runner is active
+        show_summaries: Whether to show AI-generated summaries for working agents
 
     Returns:
         A Rich Group containing all dashboard elements
@@ -1466,7 +1467,7 @@ def render_dashboard(state, project_root: Path, runner_active: bool = False) -> 
                     padding=(0, 1),
                 ))
 
-        # Summary panels for agents with summaries
+        # Summary panels for agents with cached summaries
         agents_with_summaries = [a for a in state.agents.values() if a.summary]
         if agents_with_summaries:
             renderables.append(Text(""))  # Empty line
@@ -1485,6 +1486,50 @@ def render_dashboard(state, project_root: Path, runner_active: bool = False) -> 
                     border_style=color,
                     padding=(0, 1),
                 ))
+
+        # AI summary panels for working agents (when -s flag is used)
+        if show_summaries:
+            from crew.runner import run_claude, generate_session_id
+            working_agents = [a for a in state.agents.values() if a.status in ("ready", "working")]
+            if working_agents:
+                renderables.append(Text(""))  # Empty line
+                renderables.append(Text.from_markup("[bold]AI Summaries[/bold]"))
+                for i, agent in enumerate(working_agents):
+                    color = colors[i % len(colors)]
+                    logs = read_all_logs(agent.name, project_root)
+                    if logs:
+                        # Truncate logs if too long
+                        max_log_size = 50000
+                        if len(logs) > max_log_size:
+                            logs = "... (earlier logs truncated) ...\n\n" + logs[-max_log_size:]
+                        try:
+                            response = run_claude(
+                                SUMMARIZE_PROMPT.format(logs=logs),
+                                cwd=project_root,
+                                session=generate_session_id(),
+                                is_new_session=True,
+                                timeout=60,
+                            )
+                            summary = response["result"]
+                            cost = response["cost_usd"]
+                            tokens = response["input_tokens"] + response["output_tokens"]
+                            footer = f"[dim]{tokens:,} tokens, ${cost:.4f}[/dim]"
+                        except Exception as e:
+                            summary = f"[dim]Failed to generate summary: {e}[/dim]"
+                            footer = ""
+                    else:
+                        summary = "[dim]No logs available[/dim]"
+                        footer = ""
+
+                    header = f"● {agent.name}"
+                    if agent.task:
+                        header += f" → {agent.task}"
+                    renderables.append(Panel(
+                        summary + ("\n\n" + footer if footer else ""),
+                        title=f"[bold {color}]{header}[/bold {color}]",
+                        border_style=color,
+                        padding=(0, 1),
+                    ))
     else:
         renderables.append(Text.from_markup("[dim]No agents.[/dim]"))
 
@@ -1498,25 +1543,29 @@ def cmd_dashboard(state, args: list[str], project_root: Path) -> None:
         dashboard         Show dashboard once
         dashboard -l      Live mode: auto-refresh every 2 seconds, press 'q' to exit
         dashboard --live  Same as -l
+        dashboard -s      Show AI-generated summaries for working agents
+        dashboard --summary  Same as -s
     """
     global _runner
 
     # Check for live mode flag
     live_mode = "-l" in args or "--live" in args
+    # Check for summary flag
+    show_summaries = "-s" in args or "--summary" in args
 
     if live_mode:
-        _run_live_dashboard(state, project_root)
+        _run_live_dashboard(state, project_root, show_summaries=show_summaries)
     else:
         # Print any pending events first
         print_runner_events()
 
         # Render and print dashboard
         runner_active = _runner is not None and _runner.is_running
-        dashboard = render_dashboard(state, project_root, runner_active)
+        dashboard = render_dashboard(state, project_root, runner_active, show_summaries=show_summaries)
         console.print(dashboard)
 
 
-def _run_live_dashboard(state, project_root: Path) -> None:
+def _run_live_dashboard(state, project_root: Path, show_summaries: bool = False) -> None:
     """Run the dashboard in live mode with auto-refresh.
 
     Refreshes every 2 seconds. Press 'q' to exit back to REPL.
@@ -1564,7 +1613,7 @@ def _run_live_dashboard(state, project_root: Path) -> None:
 
                 # Update the live display
                 runner_active = _runner is not None and _runner.is_running
-                dashboard = render_dashboard(state, project_root, runner_active)
+                dashboard = render_dashboard(state, project_root, runner_active, show_summaries=show_summaries)
                 live.update(dashboard)
 
                 # Sleep for 2 seconds (the refresh interval)
