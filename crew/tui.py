@@ -15,6 +15,7 @@ from typing import Any
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.widgets import DataTable, Header, Footer, Tree
 
 from crew.state import load_state
@@ -307,27 +308,29 @@ class CrewApp(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
-        Binding("t", "toggle_view", "Toggle View"),
     ]
 
     CSS = """
-    DataTable {
+    #main-container {
         height: 100%;
     }
-    TicketTree {
+    #ticket-tree {
+        width: 40%;
+        height: 100%;
+        border-right: solid $primary;
+    }
+    #agents {
+        width: 60%;
         height: 100%;
     }
     """
 
-    def __init__(self):
-        super().__init__()
-        self._show_agents = True  # Start with agents view
-
     def compose(self) -> ComposeResult:
-        """Compose the app layout."""
+        """Compose the app layout with split view."""
         yield Header()
-        yield DataTable(id="agents")
-        yield TicketTree(id="ticket-tree")
+        with Horizontal(id="main-container"):
+            yield TicketTree(id="ticket-tree")
+            yield DataTable(id="agents")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -336,10 +339,6 @@ class CrewApp(App):
         table = self.query_one("#agents", DataTable)
         table.add_columns("Name", "Task", "Status", "Steps", "Cost")
         self._refresh_agents(table)
-
-        # Hide ticket tree initially
-        ticket_tree = self.query_one("#ticket-tree", TicketTree)
-        ticket_tree.display = False
 
     def _refresh_agents(self, table: DataTable) -> None:
         """Refresh the agents table with current state."""
@@ -356,29 +355,11 @@ class CrewApp(App):
             )
 
     def action_refresh(self) -> None:
-        """Refresh the current view."""
-        if self._show_agents:
-            table = self.query_one("#agents", DataTable)
-            self._refresh_agents(table)
-        else:
-            tree = self.query_one("#ticket-tree", TicketTree)
-            tree.refresh_tickets()
-
-    def action_toggle_view(self) -> None:
-        """Toggle between agents and tickets view."""
-        self._show_agents = not self._show_agents
-
+        """Refresh both views."""
         table = self.query_one("#agents", DataTable)
+        self._refresh_agents(table)
         tree = self.query_one("#ticket-tree", TicketTree)
-
-        if self._show_agents:
-            table.display = True
-            tree.display = False
-            self._refresh_agents(table)
-        else:
-            table.display = False
-            tree.display = True
-            tree.refresh_tickets()
+        tree.refresh_tickets()
 
 
 def main():
