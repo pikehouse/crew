@@ -1,6 +1,6 @@
 ---
 id: c-9e9b
-status: open
+status: closed
 deps: []
 created: 2026-01-04T19:06:56Z
 type: task
