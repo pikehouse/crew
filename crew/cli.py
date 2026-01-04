@@ -1432,6 +1432,9 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_reset(state, args, project_root)
     elif cmd == "clean":
         cmd_clean(state, args, project_root)
+    elif cmd == "tui":
+        from crew.tui import main as tui_main
+        tui_main()
     else:
         print_error(f"Unknown command: {cmd}. Type 'help' for commands.")
 
