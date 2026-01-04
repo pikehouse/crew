@@ -445,6 +445,9 @@ def assign_task(
     agent.status = "ready"
     agent.step_count = 0
     agent.last_step_at = None
+    # Clear stale summary from previous task
+    agent.summary = None
+    agent.summary_updated_at = None
 
     save_state(state, project_root)
 
