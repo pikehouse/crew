@@ -204,6 +204,7 @@ def print_help() -> None:
   [cyan]cleanup[/cyan] <name>    Remove agent and worktree
   [cyan]merge[/cyan] <name>      Merge agent's branch to main
   [cyan]repair[/cyan]            Launch Claude to fix state issues (-n for dry run)
+  [cyan]resolve[/cyan]           Auto-resolve merge conflicts using Claude
 
   [cyan]ready[/cyan], [cyan]r[/cyan]          Show ready tickets with agent assignments
   [cyan]new[/cyan] <title> [--dep <id>...]   Create ticket with optional dependencies
