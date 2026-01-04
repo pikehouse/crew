@@ -34,7 +34,7 @@ from crew.display import (
     get_status_icon,
 )
 from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks, shutdown_agent
-from crew.crew_logging import read_log_tail
+from crew.crew_logging import read_log_tail, read_all_logs
 from crew.git import get_worktree_list, has_uncommitted_changes, remove_worktree
 
 console = Console()
@@ -755,6 +755,89 @@ def cmd_logs(state, args: list[str], project_root: Path) -> None:
         print_info(f"No logs for agent '{name}'")
 
 
+SUMMARIZE_PROMPT = """You are summarizing the work done by a Claude Code agent.
+
+Below are the logs from the agent's session. Provide a concise summary (3-5 bullet points) of:
+- What task the agent was working on
+- What files were modified or created
+- Key changes or features implemented
+- Any issues encountered or left unresolved
+
+Be specific and factual. Use file names and function names where relevant.
+
+=== LOGS ===
+{logs}
+=== END LOGS ===
+
+Provide your summary now:"""
+
+
+def cmd_summarize(state, args: list[str], project_root: Path) -> None:
+    """Summarize an agent's work using Claude.
+
+    Usage: summarize <name>
+
+    Reads all logs for the agent and uses Claude to generate a
+    concise summary of what was accomplished.
+    """
+    from crew.runner import run_claude, generate_session_id
+
+    if not args:
+        print_error("Usage: summarize <name>")
+        return
+
+    name = args[0]
+    agent = state.get_agent(name)
+
+    if not agent:
+        print_error(f"Agent '{name}' not found")
+        return
+
+    # Read all logs for the agent
+    logs = read_all_logs(name, project_root)
+
+    if not logs:
+        print_info(f"No logs for agent '{name}'")
+        return
+
+    # Truncate logs if too long (keep last ~50k chars to stay within context)
+    max_log_size = 50000
+    if len(logs) > max_log_size:
+        logs = "... (earlier logs truncated) ...\n\n" + logs[-max_log_size:]
+
+    console.print(f"[dim]Generating summary for {name}...[/dim]")
+
+    try:
+        # Use Claude to generate summary
+        response = run_claude(
+            SUMMARIZE_PROMPT.format(logs=logs),
+            cwd=project_root,
+            session=generate_session_id(),
+            is_new_session=True,
+            timeout=60,
+        )
+
+        summary = response["result"]
+
+        # Display the summary
+        from rich.panel import Panel
+        console.print()
+        console.print(Panel(
+            summary,
+            title=f"[bold]Summary: {name}[/bold]" + (f" ({agent.task})" if agent.task else ""),
+            border_style="cyan",
+            padding=(1, 2),
+        ))
+
+        # Show cost info
+        cost = response["cost_usd"]
+        tokens = response["input_tokens"] + response["output_tokens"]
+        console.print(f"[dim]Summary cost: {tokens:,} tokens, ${cost:.4f}[/dim]")
+
+    except Exception as e:
+        print_error(f"Failed to generate summary: {e}")
+
+
 def cmd_kill(state, args: list[str], project_root: Path) -> None:
     """Stop an agent, release its task, and remove worktree.
 
@@ -1412,6 +1495,8 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_peek(state, args, project_root)
     elif cmd == "logs":
         cmd_logs(state, args, project_root)
+    elif cmd == "summarize":
+        cmd_summarize(state, args, project_root)
     elif cmd == "kill":
         cmd_kill(state, args, project_root)
     elif cmd == "cleanup":

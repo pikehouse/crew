@@ -115,3 +115,20 @@ def read_log_tail(agent_name: str, lines: int = 30, project_root: Path | None = 
     output = parts[1].rsplit("=== END ===", 1)[0]
     log_lines = output.strip().split("\n")
     return "\n".join(log_lines[-lines:])
+
+
+def read_all_logs(agent_name: str, project_root: Path | None = None) -> str | None:
+    """Read all log files for an agent, concatenated in order.
+
+    Returns:
+        Combined content of all log files, or None if no logs exist.
+    """
+    log_dir = get_log_dir(agent_name, project_root)
+    logs = sorted(log_dir.glob("*.log"))
+    if not logs:
+        return None
+
+    contents = []
+    for log_file in logs:
+        contents.append(log_file.read_text())
+    return "\n".join(contents)
