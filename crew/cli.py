@@ -1847,19 +1847,10 @@ def recover_session(state, project_root: Path) -> bool:
                 except Exception as e:
                     actions_taken.append(f"Failed to complete {agent.name}: {e}")
             else:
-                # Worktree gone but agent marked done - reset to idle
-                # Can't verify work or run tests without worktree, so can't safely auto-merge
-                # Operator can manually find the branch and merge if work was committed
+                # Worktree gone but agent marked done - preserve as done
+                # Work is committed to the branch, operator can merge via 'merge <name>'
                 console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done, worktree missing)[/dim]")
-                old_task = agent.task
-                agent.status = "idle"
-                agent.worktree = None
-                agent.branch = ""
-                agent.task = None
-                agent.session = ""
-                agent.step_count = 0
-                agent.last_step_at = None
-                actions_taken.append(f"Reset {agent.name} to idle (done but worktree missing, ticket {old_task} stays open)")
+                console.print(f"    [dim]Work is on branch {agent.branch}. Use 'merge {agent.name}' to complete.[/dim]")
         elif agent.status == "stuck":
             console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](stuck)[/dim]")
         else:
