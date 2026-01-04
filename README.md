@@ -6,6 +6,9 @@ Multi-agent orchestrator for Claude Code.
 
 `crew` orchestrates multiple Claude Code agents working on the same codebase. Each agent runs in its own git worktree, with its own session, working on assigned tasks.
 
+![TUI Mode](./assets/screenshot-tui.png)
+![REPL Mode](./assets/screenshot-repl.png)
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        crew                                 │
