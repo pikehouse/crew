@@ -19,8 +19,8 @@ from textual.containers import Horizontal, Vertical, Center, Middle
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Header, Footer, Tree, Static, Button, Label
 
+from crew.runner import shutdown_agent, find_claude_process
 from crew.state import load_state, save_state
-from crew.runner import find_claude_process
 
 if TYPE_CHECKING:
     from crew.cli import BackgroundRunner
@@ -598,6 +598,90 @@ class MergeConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ConfirmKillScreen(ModalScreen[bool]):
+    """Modal screen to confirm killing an agent."""
+
+    DEFAULT_CSS = """
+    ConfirmKillScreen {
+        align: center middle;
+    }
+
+    ConfirmKillScreen > Vertical {
+        width: 50;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: thick $error;
+    }
+
+    ConfirmKillScreen > Vertical > Label {
+        width: 100%;
+        content-align: center middle;
+        margin-bottom: 1;
+    }
+
+    ConfirmKillScreen > Vertical > #agent-name {
+        text-style: bold;
+        color: $warning;
+    }
+
+    ConfirmKillScreen > Vertical > Center {
+        width: 100%;
+        height: auto;
+    }
+
+    ConfirmKillScreen > Vertical > Center > Horizontal {
+        width: auto;
+        height: auto;
+    }
+
+    ConfirmKillScreen Button {
+        margin: 0 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("y", "confirm", "Yes"),
+        Binding("n", "cancel", "No"),
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, agent_name: str) -> None:
+        """Initialize the confirm screen.
+
+        Args:
+            agent_name: Name of the agent to kill.
+        """
+        super().__init__()
+        self.agent_name = agent_name
+
+    def compose(self) -> ComposeResult:
+        """Compose the confirmation dialog."""
+        with Vertical():
+            yield Label("Kill agent?")
+            yield Label(self.agent_name, id="agent-name")
+            yield Label("This will stop the agent process.")
+            with Center():
+                with Horizontal():
+                    yield Button("Yes (y)", variant="error", id="yes")
+                    yield Button("No (n)", variant="primary", id="no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button press."""
+        if event.button.id == "yes":
+            self.dismiss(True)
+        else:
+            self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        """Confirm the action."""
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """Cancel the action."""
+        self.dismiss(False)
+
+
 class CrewApp(App):
     """A Textual app for managing crew agents."""
 
@@ -608,6 +692,7 @@ class CrewApp(App):
         Binding("R", "refresh", "Refresh"),
         Binding("t", "toggle_view", "Toggle View"),
         Binding("m", "merge_agent", "Merge"),
+        Binding("k", "kill_agent", "Kill"),
         Binding("enter", "zoom_in", "Zoom In", show=False),
         Binding("question_mark", "toggle_help", "Help"),
     ]
@@ -671,6 +756,8 @@ class CrewApp(App):
             ("s", "Stop the background runner"),
             ("R", "Refresh views"),
             ("t", "Toggle agents/tickets view"),
+            ("m", "Merge selected agent"),
+            ("k", "Kill selected agent"),
             ("Enter", "Zoom into selected ticket"),
         ]
         with Center(id="help-overlay-container"):
@@ -917,6 +1004,77 @@ class CrewApp(App):
             tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
         except Exception as e:
             event_log.add_event(f"[red]✗[/red] Merge failed for {agent.name}: {e}")
+
+    def action_kill_agent(self) -> None:
+        """Kill the selected agent with confirmation."""
+        if not self._show_agents:
+            return  # Only works in agents view
+
+        table = self.query_one("#agents", DataTable)
+        cursor_row = table.cursor_row
+
+        if cursor_row is None or cursor_row < 0:
+            self.notify("No agent selected", severity="warning")
+            return
+
+        state = load_state(self._project_root)
+        agents_list = list(state.agents.values())
+
+        if cursor_row >= len(agents_list):
+            return
+
+        agent = agents_list[cursor_row]
+
+        # Show confirmation dialog
+        self.push_screen(
+            ConfirmKillScreen(agent.name),
+            self._on_kill_confirm,
+        )
+
+    def _on_kill_confirm(self, confirmed: bool) -> None:
+        """Handle kill confirmation result.
+
+        Args:
+            confirmed: True if user confirmed the kill.
+        """
+        if not confirmed:
+            return
+
+        # Get the selected agent again (state may have changed)
+        table = self.query_one("#agents", DataTable)
+        cursor_row = table.cursor_row
+
+        if cursor_row is None or cursor_row < 0:
+            return
+
+        state = load_state(self._project_root)
+        agents_list = list(state.agents.values())
+
+        if cursor_row >= len(agents_list):
+            return
+
+        agent = agents_list[cursor_row]
+        event_log = self.query_one("#event-log", EventLog)
+
+        # Shutdown the agent
+        try:
+            work_status = shutdown_agent(agent, state)
+            save_state(state, self._project_root)
+
+            # Notify user about the result
+            if work_status == "done":
+                event_log.add_event(f"[green]✓[/green] Killed {agent.name} (work completed)")
+            elif work_status == "partial":
+                event_log.add_event(f"[yellow]![/yellow] Killed {agent.name} (partial work saved)")
+            else:
+                event_log.add_event(f"[dim]○[/dim] Killed {agent.name} (no work done)")
+
+            # Refresh the UI
+            self._refresh_agents(table)
+            tree = self.query_one("#ticket-tree", TicketTree)
+            tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
+        except Exception as e:
+            event_log.add_event(f"[red]✗[/red] Kill failed for {agent.name}: {e}")
 
     def action_quit_or_unzoom(self) -> None:
         """Unzoom if zoomed, otherwise quit."""
