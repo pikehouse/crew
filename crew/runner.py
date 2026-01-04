@@ -442,6 +442,7 @@ def assign_task(
     agent.worktree = worktree
     agent.branch = branch_name
     agent.task = task_id
+    agent.task_assigned_at = datetime.now()
     agent.status = "ready"
     agent.step_count = 0
     agent.last_step_at = None

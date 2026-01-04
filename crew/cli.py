@@ -1552,7 +1552,15 @@ def render_dashboard(state, project_root: Path, runner_active: bool = False, sho
                 ))
 
         # Summary panels for agents with cached summaries
-        agents_with_summaries = [a for a in state.agents.values() if a.summary]
+        # Only show summaries that were updated after the task was assigned
+        # This prevents stale summaries from previous tasks showing for current work
+        def has_current_summary(agent):
+            if not agent.summary or not agent.summary_updated_at:
+                return False
+            if agent.task_assigned_at and agent.summary_updated_at <= agent.task_assigned_at:
+                return False
+            return True
+        agents_with_summaries = [a for a in state.agents.values() if has_current_summary(a)]
         if agents_with_summaries:
             renderables.append(Text(""))  # Empty line
             renderables.append(Text.from_markup("[bold]Summaries:[/bold]"))

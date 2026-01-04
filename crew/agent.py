@@ -19,6 +19,7 @@ class Agent:
     worktree: Path | None
     branch: str
     task: str | None = None
+    task_assigned_at: datetime | None = None
     status: AgentStatus = "idle"
     started_at: datetime = field(default_factory=datetime.now)
     step_count: int = 0
@@ -37,6 +38,7 @@ class Agent:
             "worktree": str(self.worktree) if self.worktree else None,
             "branch": self.branch,
             "task": self.task,
+            "task_assigned_at": self.task_assigned_at.isoformat() if self.task_assigned_at else None,
             "status": self.status,
             "started_at": self.started_at.isoformat(),
             "step_count": self.step_count,
@@ -57,6 +59,7 @@ class Agent:
             worktree=Path(data["worktree"]) if data.get("worktree") else None,
             branch=data["branch"],
             task=data.get("task"),
+            task_assigned_at=datetime.fromisoformat(data["task_assigned_at"]) if data.get("task_assigned_at") else None,
             status=data.get("status", "idle"),
             started_at=datetime.fromisoformat(data["started_at"]),
             step_count=data.get("step_count", 0),
