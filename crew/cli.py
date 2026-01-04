@@ -886,6 +886,20 @@ def cmd_ready(state, args: list[str]) -> None:
         console.print("[dim]No ready work.[/dim]")
 
 
+def cmd_summarize(state, args: list[str]) -> None:
+    """Show ticket summary.
+
+    Usage: summarize [args...]
+
+    Passes through to `tk summarize` command.
+    """
+    output = run_tk("summarize", *args)
+    if output.strip():
+        console.print(output)
+    else:
+        console.print("[dim]No summary available.[/dim]")
+
+
 def cmd_new(state, args: list[str]) -> None:
     """Create a new ticket, optionally with dependencies.
 
@@ -1406,6 +1420,8 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_merge(state, args, project_root)
     elif cmd in ("r", "ready"):
         cmd_ready(state, args)
+    elif cmd in ("summarize", "sum"):
+        cmd_summarize(state, args)
     elif cmd == "new":
         cmd_new(state, args)
     elif cmd == "dep":
