@@ -63,6 +63,8 @@ class BackgroundRunner:
         self._recently_completed: set = set()
         # Lock for thread-safe operations
         self._lock = threading.Lock()
+        # Lock to serialize complete_task calls (prevents git checkout race conditions)
+        self._merge_lock = threading.Lock()
         # Store executor reference for clean shutdown
         self._executor = None
 
@@ -141,8 +143,10 @@ class BackgroundRunner:
                 task_id = agent.task
                 branch = agent.branch
                 # Complete the task (merge, cleanup, return to idle)
+                # Use merge lock to serialize git checkout operations
                 try:
-                    success, test_output = complete_task(agent, self.state, self.project_root)
+                    with self._merge_lock:
+                        success, test_output = complete_task(agent, self.state, self.project_root)
                     if success:
                         # Track as recently completed to prevent re-assignment race
                         if task_id:
