@@ -37,6 +37,11 @@ class TicketData:
     status: str
     deps: list[str]
     wave: int  # -1 = blocked/cyclic, 0 = ready, 1+ = later waves
+    description: str = ""
+    assignee: str = ""
+    created: str = ""
+    ticket_type: str = ""
+    priority: int = 0
 
 
 def compute_waves(tickets: dict[str, dict[str, Any]]) -> dict[str, int]:
@@ -110,6 +115,30 @@ def fetch_tickets() -> list[dict[str, Any]]:
         return [json.loads(line) for line in lines if line.strip()]
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+
+
+def make_ticket_data(ticket: dict[str, Any], wave: int) -> TicketData:
+    """Create a TicketData from a ticket dictionary.
+
+    Args:
+        ticket: Ticket dict from tk query.
+        wave: Wave number for the ticket.
+
+    Returns:
+        TicketData instance with all fields populated.
+    """
+    return TicketData(
+        id=ticket.get("id", ""),
+        title=ticket.get("title", ""),
+        status=ticket.get("status", ""),
+        deps=ticket.get("deps", []),
+        wave=wave,
+        description=ticket.get("description", ""),
+        assignee=ticket.get("assignee", ""),
+        created=ticket.get("created", ""),
+        ticket_type=ticket.get("type", ""),
+        priority=ticket.get("priority", 0),
+    )
 
 
 class TicketTree(Tree[TicketData]):
@@ -216,13 +245,7 @@ class TicketTree(Tree[TicketData]):
         main_label.append(f" {title}", style="bold")
         main_label.append(f" [{status}]", style=status_style)
 
-        main_data = TicketData(
-            id=zoomed_ticket,
-            title=title,
-            status=status,
-            deps=deps,
-            wave=0,
-        )
+        main_data = make_ticket_data(t, wave=0)
         main_node = self.root.add(main_label, data=main_data)
         main_node.expand()
 
@@ -246,13 +269,7 @@ class TicketTree(Tree[TicketData]):
                     label.append(f" {dep_title}", style=dep_style)
                     label.append(f" [{dep_status}]", style="dim")
 
-                    dep_data = TicketData(
-                        id=dep_id,
-                        title=dep_title,
-                        status=dep_status,
-                        deps=dep_deps,
-                        wave=0,
-                    )
+                    dep_data = make_ticket_data(dep_t, wave=0)
                     node = deps_node.add(label, data=dep_data)
                     node.allow_expand = False
                 else:
@@ -279,7 +296,6 @@ class TicketTree(Tree[TicketData]):
                 dep_t = tickets[dep_id]
                 dep_title = dep_t.get("title", dep_id)
                 dep_status = dep_t.get("status", "")
-                dep_deps = dep_t.get("deps", [])
 
                 dep_style = "dim" if dep_status != "open" else ""
                 label = Text()
@@ -287,13 +303,7 @@ class TicketTree(Tree[TicketData]):
                 label.append(f" {dep_title}", style=dep_style)
                 label.append(f" [{dep_status}]", style="dim")
 
-                dep_data = TicketData(
-                    id=dep_id,
-                    title=dep_title,
-                    status=dep_status,
-                    deps=dep_deps,
-                    wave=0,
-                )
+                dep_data = make_ticket_data(dep_t, wave=0)
                 node = dependents_node.add(label, data=dep_data)
                 node.allow_expand = False
 
@@ -330,13 +340,7 @@ class TicketTree(Tree[TicketData]):
             for tid in sorted(wave_tickets[0]):
                 t = tickets[tid]
                 title = t.get("title", tid)
-                ticket_data = TicketData(
-                    id=tid,
-                    title=title,
-                    status=t.get("status", ""),
-                    deps=t.get("deps", []),
-                    wave=0,
-                )
+                ticket_data = make_ticket_data(t, wave=0)
                 label = Text()
                 label.append(tid, style="cyan")
                 label.append(f" {title}")
@@ -355,13 +359,7 @@ class TicketTree(Tree[TicketData]):
                 title = t.get("title", tid)
                 deps = t.get("deps", [])
                 open_deps = [d for d in deps if d in tickets and tickets[d].get("status") == "open"]
-                ticket_data = TicketData(
-                    id=tid,
-                    title=title,
-                    status=t.get("status", ""),
-                    deps=deps,
-                    wave=1,
-                )
+                ticket_data = make_ticket_data(t, wave=1)
                 label = Text()
                 label.append(tid, style="cyan")
                 label.append(f" {title}")
@@ -383,13 +381,7 @@ class TicketTree(Tree[TicketData]):
                     title = t.get("title", tid)
                     deps = t.get("deps", [])
                     open_deps = [d for d in deps if d in tickets and tickets[d].get("status") == "open"]
-                    ticket_data = TicketData(
-                        id=tid,
-                        title=title,
-                        status=t.get("status", ""),
-                        deps=deps,
-                        wave=wave,
-                    )
+                    ticket_data = make_ticket_data(t, wave=wave)
                     label = Text()
                     label.append(tid, style="cyan")
                     label.append(f" {title}")
@@ -409,13 +401,7 @@ class TicketTree(Tree[TicketData]):
                 title = t.get("title", tid)
                 deps = t.get("deps", [])
                 open_deps = [d for d in deps if d in tickets and tickets[d].get("status") == "open"]
-                ticket_data = TicketData(
-                    id=tid,
-                    title=title,
-                    status=t.get("status", ""),
-                    deps=deps,
-                    wave=-1,
-                )
+                ticket_data = make_ticket_data(t, wave=-1)
                 label = Text()
                 label.append(tid, style="cyan")
                 label.append(f" {title}")
@@ -433,13 +419,7 @@ class TicketTree(Tree[TicketData]):
             for tid in sorted(closed_tickets):
                 t = tickets[tid]
                 title = t.get("title", tid)
-                ticket_data = TicketData(
-                    id=tid,
-                    title=title,
-                    status="closed",
-                    deps=t.get("deps", []),
-                    wave=-2,  # Special value for closed
-                )
+                ticket_data = make_ticket_data(t, wave=-2)
                 label = Text()
                 label.append(tid, style="dim cyan")
                 label.append(f" {title}", style="dim")
