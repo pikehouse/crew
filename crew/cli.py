@@ -254,7 +254,7 @@ _shutting_down: bool = False
 # Commands that modify state and are blocked in read-only mode
 _MODIFYING_COMMANDS = frozenset({
     "spawn", "run", "work", "stop", "kill", "cleanup", "merge",
-    "reset", "new", "dep", "assign"
+    "reset", "new", "dep", "assign", "repair", "fix", "doctor"
 })
 
 
@@ -885,6 +885,77 @@ Be very brief - each bullet should be under 60 chars.
 Summary:"""
 
 
+REPAIR_PROMPT = '''You are repairing a "crew" multi-agent orchestrator. Here's how it works:
+
+## Crew Overview
+Crew manages multiple Claude Code agents working in parallel on tickets.
+Each agent works in its own git worktree on a separate branch.
+
+## Agent Lifecycle
+1. idle → ready: Task assigned, worktree created (agent/{{name}}-{{task_id}})
+2. ready → working: Claude stepping through task
+3. working → done: Agent outputs "DONE"
+4. done → idle: Branch merged to main, worktree removed, ticket closed
+
+## State Schema (.crew/state.json)
+{{
+  "agents": {{
+    "<name>": {{
+      "name": "a",
+      "session": "<uuid>",           // Claude session ID, "" if idle
+      "worktree": "/path/to/agents/a-c-xxxx",  // null if idle
+      "branch": "agent/a-c-xxxx",    // "" if idle
+      "task": "c-xxxx",              // null if idle
+      "status": "idle|ready|working|done|stuck",
+      "step_count": 0,
+      ...
+    }}
+  }}
+}}
+
+## Idle Agent Invariants
+When an agent is idle, it MUST have:
+- session: ""
+- worktree: null
+- branch: ""
+- task: null
+- step_count: 0
+- last_step_at: null
+
+## Git Worktree Structure
+- agents/{{name}}-{{task_id}}/  →  branch: agent/{{name}}-{{task_id}}
+- Each worktree has CLAUDE.md with task instructions
+
+## Ticket Files (.tickets/*.md)
+YAML front matter with: id, status (open/closed), deps, priority
+Task assigned to agent → ticket stays open until merge completes
+
+## Common Issues to Fix
+1. **Orphaned worktrees**: Directory in agents/ but agent is idle → delete the directory
+2. **Missing worktrees**: Agent has worktree path but directory gone → reset agent to idle
+3. **Stale branches**: agent/* branch exists but no agent assigned → delete the branch
+4. **State mismatch**: Agent status doesn't match reality → fix state.json
+5. **Merge conflicts**: Git merge in progress needs resolution → abort or resolve
+6. **Zombie processes**: Claude process died but agent still "working" → reset to ready
+
+## Current State
+{context}
+
+## Your Task
+1. Read .crew/state.json to understand current agent states
+2. Diagnose all issues listed above
+3. Fix each issue:
+   - Edit .crew/state.json to correct agent state (use the idle invariants above)
+   - Delete orphaned worktrees with `git worktree remove`
+   - Delete stale branches with `git branch -D`
+   - Abort any stuck merge with `git merge --abort`
+   - Prune worktree references with `git worktree prune`
+4. Explain what you fixed
+
+Start by reading .crew/state.json, then fix all issues you find.
+'''
+
+
 def generate_haiku_summary(agent_name: str, project_root: Path) -> tuple[str | None, float]:
     """Generate a brief summary using Haiku model.
 
@@ -1117,6 +1188,150 @@ def cmd_merge(state, args: list[str], project_root: Path) -> None:
         print_agent_merged(agent)
     except Exception as e:
         print_error(f"Merge failed: {e}")
+
+
+def gather_repair_context(state: State, project_root: Path) -> str:
+    """Gather comprehensive context for repair diagnosis.
+
+    Args:
+        state: Current crew state
+        project_root: Project root path
+
+    Returns:
+        Formatted string with all diagnostic context
+    """
+    import json as json_module
+    from crew.git import run_git, get_worktree_list
+
+    sections = []
+
+    # Git status
+    try:
+        git_status = run_git("status", "--short", cwd=project_root)
+        sections.append(f"### Git Status\n```\n{git_status or '(clean)'}\n```")
+    except Exception as e:
+        sections.append(f"### Git Status\nError: {e}")
+
+    # Check for merge in progress
+    merge_head = project_root / ".git" / "MERGE_HEAD"
+    if merge_head.exists():
+        sections.append("### Merge In Progress\n**WARNING: A merge is in progress!**")
+
+    # Worktree list
+    try:
+        worktrees = get_worktree_list()
+        wt_lines = [f"- {wt.get('path')} → {wt.get('branch', 'detached')}" for wt in worktrees]
+        sections.append(f"### Git Worktrees\n" + "\n".join(wt_lines))
+    except Exception as e:
+        sections.append(f"### Git Worktrees\nError: {e}")
+
+    # Agent branches
+    try:
+        all_branches = run_git("branch", "-a", cwd=project_root)
+        agent_branches = [b.strip() for b in all_branches.split("\n") if "agent/" in b]
+        if agent_branches:
+            sections.append(f"### Agent Branches\n" + "\n".join(f"- {b}" for b in agent_branches))
+        else:
+            sections.append("### Agent Branches\nNone")
+    except Exception as e:
+        sections.append(f"### Agent Branches\nError: {e}")
+
+    # State.json summary
+    try:
+        state_dict = state.to_dict()
+        agents_summary = []
+        for name, agent_data in state_dict.get("agents", {}).items():
+            status = agent_data.get("status", "?")
+            task = agent_data.get("task", "None")
+            worktree = agent_data.get("worktree", "None")
+            branch = agent_data.get("branch", "")
+            agents_summary.append(f"- {name}: status={status}, task={task}, branch={branch}")
+        sections.append("### Agent States\n" + "\n".join(agents_summary))
+    except Exception as e:
+        sections.append(f"### Agent States\nError: {e}")
+
+    # Agents directory contents
+    agents_dir = project_root / "agents"
+    if agents_dir.exists():
+        dirs = [d.name for d in agents_dir.iterdir() if d.is_dir()]
+        sections.append(f"### Agents Directory Contents\n" + "\n".join(f"- {d}" for d in dirs) if dirs else "### Agents Directory Contents\n(empty)")
+    else:
+        sections.append("### Agents Directory\nDirectory does not exist")
+
+    # Running Claude processes
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ps", "-eo", "pid,command"],
+            capture_output=True,
+            text=True,
+        )
+        claude_procs = [line for line in result.stdout.split("\n") if "claude" in line.lower() and "grep" not in line.lower()]
+        if claude_procs:
+            sections.append("### Running Claude Processes\n" + "\n".join(f"- {p.strip()}" for p in claude_procs[:5]))
+        else:
+            sections.append("### Running Claude Processes\nNone")
+    except Exception:
+        sections.append("### Running Claude Processes\nCould not check")
+
+    return "\n\n".join(sections)
+
+
+def cmd_repair(state, args: list[str], project_root: Path) -> None:
+    """Launch Claude to diagnose and repair crew state.
+
+    Usage:
+        repair           # Interactive - Claude fixes issues
+        repair -n        # Dry run - diagnose only
+        repair --print   # Same as -n
+    """
+    import subprocess
+
+    dry_run = "-n" in args or "--print" in args
+
+    # Gather context
+    context = gather_repair_context(state, project_root)
+
+    # Build prompt
+    prompt = REPAIR_PROMPT.format(context=context)
+
+    console.print("[bold]Launching Claude for repair...[/bold]")
+
+    if dry_run:
+        console.print("[dim]Dry run mode - Claude will diagnose but not fix[/dim]\n")
+        # Just print diagnosis
+        try:
+            result = subprocess.run(
+                ["claude", "--print", "-p", prompt],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            console.print(result.stdout)
+            if result.stderr:
+                console.print(f"[dim]{result.stderr}[/dim]")
+        except subprocess.TimeoutExpired:
+            print_error("Repair timed out after 120 seconds")
+        except FileNotFoundError:
+            print_error("Claude CLI not found. Install it first.")
+    else:
+        # Interactive repair - Claude can make changes
+        try:
+            subprocess.run(
+                ["claude", "-p", prompt],
+                cwd=project_root,
+            )
+            # Reload state after repair
+            console.print("\n[bold]Reloading state after repair...[/bold]")
+            new_state = load_state(project_root)
+            # Update the global state reference
+            state.agents = new_state.agents
+            print_info("State reloaded. Run 'd' to see current status.")
+        except FileNotFoundError:
+            print_error("Claude CLI not found. Install it first.")
+        except KeyboardInterrupt:
+            console.print("\n[dim]Repair cancelled.[/dim]")
 
 
 def cmd_ready(state, args: list[str]) -> None:
@@ -1778,6 +1993,8 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_cleanup(state, args, project_root)
     elif cmd == "merge":
         cmd_merge(state, args, project_root)
+    elif cmd in ("repair", "fix", "doctor"):
+        cmd_repair(state, args, project_root)
     elif cmd in ("r", "ready"):
         cmd_ready(state, args)
     elif cmd == "new":
