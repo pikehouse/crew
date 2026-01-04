@@ -151,7 +151,7 @@ class BackgroundRunner:
                         # Tests failed - agent was set back to working, feed test output
                         self.events.put(RunnerEvent("error", agent.name, f"Tests failed, agent will retry"))
                         # Step agent again with test failure prompt
-                        from crew.runner import step_agent, TEST_FAILURE_PROMPT
+                        from crew.runner import TEST_FAILURE_PROMPT
                         step_agent(
                             agent, self.state,
                             prompt=TEST_FAILURE_PROMPT.format(test_output=test_output),
