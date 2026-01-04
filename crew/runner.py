@@ -178,6 +178,24 @@ def generate_session_id() -> str:
     return str(uuid.uuid4())
 
 
+def _refresh_agent_summary(agent, project_root: Path) -> None:
+    """Generate a brief Haiku summary for an agent.
+
+    This is called automatically when an agent completes.
+    Silently fails if summary generation fails.
+    """
+    from datetime import datetime
+    from crew.cli import generate_haiku_summary
+
+    try:
+        summary, _ = generate_haiku_summary(agent.name, project_root)
+        if summary:
+            agent.summary = summary
+            agent.summary_updated_at = datetime.now()
+    except Exception:
+        pass  # Silently fail - summary is not critical
+
+
 def get_ready_tasks() -> list[str]:
     """Get list of ready task IDs from tk."""
     try:
@@ -252,6 +270,7 @@ def run_claude(
     session: str | None = None,
     is_new_session: bool = False,
     timeout: int = 300,
+    model: str | None = None,
 ) -> dict:
     """Run claude --print with JSON output and parse the response.
 
@@ -261,11 +280,15 @@ def run_claude(
         session: Session ID (required if is_new_session or resuming)
         is_new_session: If True, use --session-id to create new session
         timeout: Timeout in seconds
+        model: Model to use (e.g., "haiku" for claude-haiku)
 
     Returns:
         Parsed JSON response with keys: result, input_tokens, output_tokens, cost_usd, stderr
     """
     cmd = ["claude", "--print", "--output-format", "json"]
+
+    if model:
+        cmd.extend(["--model", model])
 
     if session:
         if is_new_session:
@@ -693,6 +716,8 @@ def step_agent(
     # Check if done (but don't close ticket yet - that happens after merge)
     if is_done(result):
         agent.status = "done"
+        # Generate Haiku summary when agent completes
+        _refresh_agent_summary(agent, project_root)
 
     # Check if stuck (too many steps)
     if agent.step_count >= 20 and agent.status != "done":

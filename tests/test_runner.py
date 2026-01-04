@@ -132,6 +132,27 @@ class TestRunClaude:
 
             assert "Claude CLI not found" in str(exc_info.value)
 
+    def test_run_claude_with_model_parameter(self, temp_dir: Path):
+        """run_claude includes --model flag when model is specified."""
+        mock_response = {"result": "OK", "usage": {}, "total_cost_usd": 0.0}
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout=json.dumps(mock_response),
+                stderr="",
+            )
+
+            run_claude(
+                "Test prompt",
+                cwd=temp_dir,
+                model="haiku",
+            )
+
+            call_args = mock_run.call_args
+            cmd = call_args[0][0]
+            assert "--model" in cmd
+            assert "haiku" in cmd
+
 
 class TestIsDone:
     """Tests for is_done function."""
