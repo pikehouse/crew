@@ -15,7 +15,7 @@ from typing import Any, TYPE_CHECKING
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Center, Middle
 from textual.widgets import DataTable, Header, Footer, Tree, Static
 
 from crew.state import load_state
@@ -479,6 +479,47 @@ class EventLog(Static):
             self.update("[dim]No recent events[/dim]")
 
 
+class HelpOverlay(Static):
+    """A modal overlay showing all keybindings."""
+
+    DEFAULT_CSS = """
+    HelpOverlay {
+        width: 50;
+        height: auto;
+        background: $surface;
+        border: round $primary;
+        padding: 1 2;
+    }
+    """
+
+    def __init__(self, bindings: list[tuple[str, str]], **kwargs) -> None:
+        """Initialize the help overlay.
+
+        Args:
+            bindings: List of (key, description) tuples.
+        """
+        super().__init__(**kwargs)
+        self._bindings = bindings
+
+    def compose(self) -> ComposeResult:
+        """Compose the help content."""
+        yield Static(self._render_help())
+
+    def _render_help(self) -> Text:
+        """Render the help text."""
+        text = Text()
+        text.append("Keybindings\n", style="bold underline")
+        text.append("\n")
+        for key, description in self._bindings:
+            text.append(f"  {key:>10}", style="bold cyan")
+            text.append(f"  {description}\n")
+        text.append("\n")
+        text.append("Press ", style="dim")
+        text.append("?", style="bold cyan")
+        text.append(" to close", style="dim")
+        return text
+
+
 class CrewApp(App):
     """A Textual app for managing crew agents."""
 
@@ -489,6 +530,7 @@ class CrewApp(App):
         Binding("R", "refresh", "Refresh"),
         Binding("t", "toggle_view", "Toggle View"),
         Binding("enter", "zoom_in", "Zoom In", show=False),
+        Binding("question_mark", "toggle_help", "Help"),
     ]
 
     CSS = """
@@ -504,6 +546,15 @@ class CrewApp(App):
         width: 60%;
         height: 100%;
     }
+    #help-overlay-container {
+        width: 100%;
+        height: 100%;
+        align: center middle;
+        display: none;
+    }
+    #help-overlay-container.visible {
+        display: block;
+    }
     """
 
     def __init__(self, runner: BackgroundRunner | None = None) -> None:
@@ -517,6 +568,7 @@ class CrewApp(App):
         self._zoomed_ticket: str | None = None  # Ticket ID when zoomed
         self._runner = runner
         self._poll_timer = None
+        self._help_visible = False
 
     def compose(self) -> ComposeResult:
         """Compose the app layout with split view."""
@@ -526,6 +578,19 @@ class CrewApp(App):
             yield DataTable(id="agents")
         yield EventLog(id="event-log")
         yield Footer()
+        # Help overlay (hidden by default)
+        bindings = [
+            ("?", "Show/hide this help"),
+            ("q", "Quit (or unzoom if zoomed)"),
+            ("r", "Run the background runner"),
+            ("s", "Stop the background runner"),
+            ("R", "Refresh views"),
+            ("t", "Toggle agents/tickets view"),
+            ("Enter", "Zoom into selected ticket"),
+        ]
+        with Center(id="help-overlay-container"):
+            with Middle():
+                yield HelpOverlay(bindings, id="help-overlay")
 
     def on_mount(self) -> None:
         """Set up the app when it mounts."""
@@ -676,9 +741,21 @@ class CrewApp(App):
         self._zoomed_ticket = ticket_data.id
         tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
 
+    def action_toggle_help(self) -> None:
+        """Toggle the help overlay visibility."""
+        container = self.query_one("#help-overlay-container")
+        self._help_visible = not self._help_visible
+        if self._help_visible:
+            container.add_class("visible")
+        else:
+            container.remove_class("visible")
+
     def action_quit_or_unzoom(self) -> None:
         """Unzoom if zoomed, otherwise quit."""
-        if self._zoomed_ticket is not None:
+        if self._help_visible:
+            # Close help if visible
+            self.action_toggle_help()
+        elif self._zoomed_ticket is not None:
             # Unzoom
             self._zoomed_ticket = None
             tree = self.query_one("#ticket-tree", TicketTree)
