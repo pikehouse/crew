@@ -166,7 +166,7 @@ class BackgroundRunner:
                         # Loop continues - if agent says DONE again, we'll try complete_task again
                 except Exception as e:
                     self.events.put(RunnerEvent("error", agent.name, f"Complete failed: {e}"))
-                    break
+                    break  # Don't loop forever on persistent errors
 
         except Exception as e:
             self.events.put(RunnerEvent("error", agent.name, str(e)))
