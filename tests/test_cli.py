@@ -1066,10 +1066,11 @@ class TestRecoverSession:
         # Check the path is in output (may be split by console wrapping)
         assert "agents" in captured.out and "orphan" in captured.out
 
-    def test_recover_session_preserves_done_agent_with_missing_worktree(self, project_root: Path, capsys):
-        """Test recover_session preserves done agents with missing worktree.
+    def test_recover_session_resets_done_agent_with_missing_worktree(self, project_root: Path, capsys):
+        """Test recover_session resets done agents with missing worktree to idle.
 
-        Work is committed to the branch and can still be merged via 'merge <name>' command.
+        Can't run tests without worktree, so can't safely auto-merge.
+        User can manually merge the branch if work was committed.
         """
         state = State()
         agent = Agent(
@@ -1089,9 +1090,9 @@ class TestRecoverSession:
         captured = capsys.readouterr()
         assert "done-agent" in captured.out
         assert "worktree missing" in captured.out
-        # Agent should remain done - work is on the branch
-        assert agent.status == "done"
-        assert agent.task == "completed-task"
+        # Agent reset to idle - can't merge without worktree to run tests
+        assert agent.status == "idle"
+        assert agent.task is None
 
     def test_recover_session_completes_done_agent_with_worktree(self, temp_dir: Path, capsys):
         """Test recover_session calls complete_task for done agents with existing worktree."""

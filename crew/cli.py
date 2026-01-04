@@ -129,12 +129,15 @@ class BackgroundRunner:
 
     def _step_one_agent(self, agent):
         """Step a single agent (runs in thread pool)."""
+        from crew.runner import TEST_FAILURE_PROMPT
+
         try:
             output = step_agent(agent, self.state, project_root=self.project_root)
             preview = output[:60].replace('\n', ' ') if output else ""
             self.events.put(RunnerEvent("step", agent.name, preview))
 
-            if agent.is_done:
+            # Loop while agent keeps saying DONE (for test failure retries)
+            while agent.is_done:
                 task_id = agent.task
                 branch = agent.branch
                 # Complete the task (merge, cleanup, return to idle)
@@ -147,18 +150,19 @@ class BackgroundRunner:
                                 self._recently_completed.add(task_id)
                         self.events.put(RunnerEvent("done", agent.name, task_id or ""))
                         self.events.put(RunnerEvent("merged", agent.name, branch))
+                        break  # Successfully completed
                     else:
-                        # Tests failed - agent was set back to working, feed test output
+                        # Tests failed - step agent with test output, then loop to check again
                         self.events.put(RunnerEvent("error", agent.name, f"Tests failed, agent will retry"))
-                        # Step agent again with test failure prompt
-                        from crew.runner import TEST_FAILURE_PROMPT
                         step_agent(
                             agent, self.state,
                             prompt=TEST_FAILURE_PROMPT.format(test_output=test_output),
                             project_root=self.project_root
                         )
+                        # Loop continues - if agent says DONE again, we'll try complete_task again
                 except Exception as e:
                     self.events.put(RunnerEvent("error", agent.name, f"Complete failed: {e}"))
+                    break
 
         except Exception as e:
             self.events.put(RunnerEvent("error", agent.name, str(e)))
@@ -1672,10 +1676,13 @@ def recover_session(state, project_root: Path) -> bool:
                 except Exception as e:
                     actions_taken.append(f"Failed to complete {agent.name}: {e}")
             else:
-                # Worktree gone but agent marked done - preserve as done
-                # Work is committed to the branch and can still be merged
+                # Worktree gone but agent marked done - reset to idle
+                # Can't run tests without worktree, so can't safely auto-merge
+                # User can manually merge the branch if work was committed
                 console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done, worktree missing)[/dim]")
-                # Keep agent as done - can be merged via 'merge <name>' command
+                agent.status = "idle"
+                agent.task = None
+                actions_taken.append(f"Reset {agent.name} to idle (worktree missing, branch preserved)")
         elif agent.status == "stuck":
             console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](stuck)[/dim]")
         else:
