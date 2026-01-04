@@ -1164,20 +1164,6 @@ def cmd_ready(state, args: list[str]) -> None:
         console.print("[dim]No ready work.[/dim]")
 
 
-def cmd_summarize(state, args: list[str]) -> None:
-    """Show ticket summary.
-
-    Usage: summarize [args...]
-
-    Passes through to `tk summarize` command.
-    """
-    output = run_tk("summarize", *args)
-    if output.strip():
-        console.print(output)
-    else:
-        console.print("[dim]No summary available.[/dim]")
-
-
 def cmd_new(state, args: list[str]) -> None:
     """Create a new ticket, optionally with dependencies.
 
@@ -1759,7 +1745,7 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_peek(state, args, project_root)
     elif cmd == "logs":
         cmd_logs(state, args, project_root)
-    elif cmd == "summarize":
+    elif cmd in ("summarize", "sum"):
         cmd_summarize(state, args, project_root)
     elif cmd == "refresh-summary":
         cmd_refresh_summary(state, args, project_root)
@@ -1771,8 +1757,6 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_merge(state, args, project_root)
     elif cmd in ("r", "ready"):
         cmd_ready(state, args)
-    elif cmd in ("summarize", "sum"):
-        cmd_summarize(state, args)
     elif cmd == "new":
         cmd_new(state, args)
     elif cmd == "dep":
@@ -1942,9 +1926,9 @@ def recover_session(state, project_root: Path) -> bool:
                     actions_taken.append(f"Failed to complete {agent.name}: {e}")
             else:
                 # Worktree gone but agent marked done - preserve done status
-                # Work is still committed to the branch and can be merged manually via 'merge <name>'
+                # Work is committed to the branch, operator can merge via 'merge <name>'
                 console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done, worktree missing)[/dim]")
-                console.print(f"    [dim]Branch {agent.branch} may have committed work. Use 'merge {agent.name}' to complete.[/dim]")
+                console.print(f"    [dim]Work is on branch {agent.branch}. Use 'merge {agent.name}' to complete.[/dim]")
         elif agent.status == "stuck":
             console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](stuck)[/dim]")
         else:

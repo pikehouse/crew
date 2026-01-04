@@ -99,6 +99,7 @@ def print_agent_done(agent: Agent) -> None:
 def print_agent_merged(agent: Agent) -> None:
     """Print agent merge message."""
     console.print(f"[green]✓[/green] Merged [bold]{agent.branch}[/bold] to main")
+    console.print(f"  [dim]Agent '{agent.name}' removed. Use 'spawn' to create a new one.[/dim]")
 
 
 def print_error(message: str) -> None:

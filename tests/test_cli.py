@@ -1069,7 +1069,7 @@ class TestRecoverSession:
     def test_recover_session_preserves_done_agent_with_missing_worktree(self, project_root: Path, capsys):
         """Test recover_session preserves done agents with missing worktree.
 
-        Work is still committed to the branch and can be merged manually via 'merge <name>'.
+        Work is committed to the branch and can be merged via 'merge <name>' command.
         We preserve the done status so the operator can complete the merge.
         """
         state = State()
