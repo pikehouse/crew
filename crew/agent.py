@@ -26,6 +26,8 @@ class Agent:
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cost_usd: float = 0.0
+    summary: str | None = None
+    summary_updated_at: datetime | None = None
 
     def to_dict(self) -> dict:
         """Serialize to dictionary for JSON storage."""
@@ -42,6 +44,8 @@ class Agent:
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
             "total_cost_usd": self.total_cost_usd,
+            "summary": self.summary,
+            "summary_updated_at": self.summary_updated_at.isoformat() if self.summary_updated_at else None,
         }
 
     @classmethod
@@ -60,6 +64,8 @@ class Agent:
             total_input_tokens=data.get("total_input_tokens", 0),
             total_output_tokens=data.get("total_output_tokens", 0),
             total_cost_usd=data.get("total_cost_usd", 0.0),
+            summary=data.get("summary"),
+            summary_updated_at=datetime.fromisoformat(data["summary_updated_at"]) if data.get("summary_updated_at") else None,
         )
 
     @property

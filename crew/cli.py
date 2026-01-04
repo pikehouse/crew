@@ -772,6 +772,56 @@ Be specific and factual. Use file names and function names where relevant.
 Provide your summary now:"""
 
 
+HAIKU_SUMMARY_PROMPT = """Summarize this agent's recent work in 2-3 short bullet points.
+Focus on: what was done, which files changed, current status.
+Be very brief - each bullet should be under 60 chars.
+
+=== LOGS ===
+{logs}
+=== END LOGS ===
+
+Summary:"""
+
+
+def generate_haiku_summary(agent_name: str, project_root: Path) -> tuple[str | None, float]:
+    """Generate a brief summary using Haiku model.
+
+    Args:
+        agent_name: Name of the agent to summarize
+        project_root: Project root path
+
+    Returns:
+        Tuple of (summary text or None, cost in USD)
+    """
+    from crew.runner import run_claude, generate_session_id
+    from datetime import datetime
+
+    logs = read_all_logs(agent_name, project_root)
+
+    if not logs:
+        return None, 0.0
+
+    # Keep only recent logs (last 10k chars for Haiku efficiency)
+    max_log_size = 10000
+    if len(logs) > max_log_size:
+        logs = "... (earlier logs truncated) ...\n\n" + logs[-max_log_size:]
+
+    try:
+        response = run_claude(
+            HAIKU_SUMMARY_PROMPT.format(logs=logs),
+            cwd=project_root,
+            session=generate_session_id(),
+            is_new_session=True,
+            timeout=30,
+            model="haiku",
+        )
+
+        return response["result"].strip(), response["cost_usd"]
+
+    except Exception:
+        return None, 0.0
+
+
 def cmd_summarize(state, args: list[str], project_root: Path) -> None:
     """Summarize an agent's work using Claude.
 
@@ -836,6 +886,53 @@ def cmd_summarize(state, args: list[str], project_root: Path) -> None:
 
     except Exception as e:
         print_error(f"Failed to generate summary: {e}")
+
+
+def cmd_refresh_summary(state, args: list[str], project_root: Path) -> None:
+    """Refresh Haiku summary for an agent or all agents.
+
+    Usage:
+        refresh-summary <name>    Refresh summary for one agent
+        refresh-summary --all     Refresh summaries for all agents
+
+    Generates a brief summary using Haiku (fast and cheap) and
+    caches it for display in the dashboard.
+    """
+    from datetime import datetime
+
+    if not args:
+        print_error("Usage: refresh-summary <name> or refresh-summary --all")
+        return
+
+    if args[0] == "--all":
+        agents_to_refresh = [a for a in state.agents.values() if a.status in ("ready", "working", "done")]
+    else:
+        name = args[0]
+        agent = state.get_agent(name)
+        if not agent:
+            print_error(f"Agent '{name}' not found")
+            return
+        agents_to_refresh = [agent]
+
+    if not agents_to_refresh:
+        print_info("No agents to refresh")
+        return
+
+    total_cost = 0.0
+    for agent in agents_to_refresh:
+        console.print(f"[dim]Refreshing summary for {agent.name}...[/dim]")
+        summary, cost = generate_haiku_summary(agent.name, project_root)
+        if summary:
+            agent.summary = summary
+            agent.summary_updated_at = datetime.now()
+            total_cost += cost
+            console.print(f"[green]✓[/green] {agent.name}: summary updated")
+        else:
+            console.print(f"[yellow]○[/yellow] {agent.name}: no logs or failed")
+
+    state.save()
+    if total_cost > 0:
+        console.print(f"[dim]Total summary cost: ${total_cost:.4f}[/dim]")
 
 
 def cmd_kill(state, args: list[str], project_root: Path) -> None:
@@ -1364,6 +1461,26 @@ def render_dashboard(state, project_root: Path, runner_active: bool = False) -> 
                     border_style=color,
                     padding=(0, 1),
                 ))
+
+        # Summary panels for agents with summaries
+        agents_with_summaries = [a for a in state.agents.values() if a.summary]
+        if agents_with_summaries:
+            renderables.append(Text(""))  # Empty line
+            renderables.append(Text.from_markup("[bold]Summaries:[/bold]"))
+            for i, agent in enumerate(agents_with_summaries):
+                color = colors[i % len(colors)]
+
+                # Build header with age indicator
+                header = f"✦ {agent.name}"
+                if agent.task:
+                    header += f" → {agent.task}"
+
+                renderables.append(Panel(
+                    agent.summary,
+                    title=f"[bold {color}]{header}[/bold {color}]",
+                    border_style=color,
+                    padding=(0, 1),
+                ))
     else:
         renderables.append(Text.from_markup("[dim]No agents.[/dim]"))
 
@@ -1497,6 +1614,8 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_logs(state, args, project_root)
     elif cmd == "summarize":
         cmd_summarize(state, args, project_root)
+    elif cmd == "refresh-summary":
+        cmd_refresh_summary(state, args, project_root)
     elif cmd == "kill":
         cmd_kill(state, args, project_root)
     elif cmd == "cleanup":
