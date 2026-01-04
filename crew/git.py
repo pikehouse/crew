@@ -47,6 +47,9 @@ def create_worktree(name: str, agents_dir: Path | None = None) -> Path:
 
     # Create worktree with new branch
     # Try to create with new branch first, fall back to existing branch
+    # Prune stale worktree entries first (e.g. from manually deleted dirs)
+    run_git("worktree", "prune")
+
     try:
         run_git("worktree", "add", str(worktree_path), "-b", branch_name)
     except GitError:
@@ -59,6 +62,8 @@ def create_worktree(name: str, agents_dir: Path | None = None) -> Path:
 def remove_worktree(worktree_path: Path) -> None:
     """Remove a git worktree."""
     if not worktree_path.exists():
+        # Directory gone but git might still have it registered - prune stale entries
+        run_git("worktree", "prune")
         return
 
     run_git("worktree", "remove", str(worktree_path), "--force")
