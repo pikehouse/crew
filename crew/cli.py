@@ -743,20 +743,114 @@ def cmd_ps(state, args: list[str]) -> None:
 
 
 def cmd_logs(state, args: list[str], project_root: Path) -> None:
-    """Show log directory for agent."""
-    if not args:
-        print_error("Usage: logs <name>")
+    """Show logs for an agent or the most recent log.
+
+    Usage:
+        logs            - Show tail of most recent step log across all agents
+        logs -n 50      - Show last 50 lines of most recent log (default: 30)
+        logs <name>     - Show tail of latest log for specific agent
+        logs <name> -l  - List all log files for agent
+        logs <name> -a  - Show all logs for agent (concatenated)
+    """
+    # Parse arguments
+    lines = 30
+    list_files = False
+    show_all = False
+    agent_name = None
+
+    i = 0
+    while i < len(args):
+        if args[i] == "-n" and i + 1 < len(args):
+            try:
+                lines = int(args[i + 1])
+                i += 2
+                continue
+            except ValueError:
+                print_error(f"Invalid line count: {args[i + 1]}")
+                return
+        elif args[i] == "-l":
+            list_files = True
+            i += 1
+        elif args[i] == "-a":
+            show_all = True
+            i += 1
+        elif not agent_name and not args[i].startswith("-"):
+            agent_name = args[i]
+            i += 1
+        else:
+            i += 1
+
+    logs_dir = project_root / ".crew" / "logs"
+
+    # If no agent specified, find the most recent log across all agents
+    if not agent_name:
+        if not logs_dir.exists():
+            print_info("No logs found")
+            return
+
+        # Find most recent log file across all agent directories
+        most_recent_log = None
+        most_recent_mtime = 0.0
+        most_recent_agent = None
+
+        for agent_dir in logs_dir.iterdir():
+            if agent_dir.is_dir():
+                for log_file in agent_dir.glob("*.log"):
+                    mtime = log_file.stat().st_mtime
+                    if mtime > most_recent_mtime:
+                        most_recent_mtime = mtime
+                        most_recent_log = log_file
+                        most_recent_agent = agent_dir.name
+
+        if not most_recent_log:
+            print_info("No logs found")
+            return
+
+        # Show tail of the most recent log
+        content = most_recent_log.read_text()
+
+        # Extract the output section (between --- and === END ===)
+        parts = content.split("---\n", 1)
+        if len(parts) >= 2:
+            output = parts[1].rsplit("=== END ===", 1)[0]
+        else:
+            output = content
+
+        log_lines = output.strip().split("\n")
+        tail = "\n".join(log_lines[-lines:])
+
+        console.print(f"[bold]{most_recent_agent}[/bold] → {most_recent_log.name}")
+        console.print(tail)
         return
 
-    name = args[0]
-    log_dir = project_root / ".crew" / "logs" / name
+    # Agent name specified
+    log_dir = logs_dir / agent_name
 
-    if log_dir.exists():
+    if not log_dir.exists():
+        print_info(f"No logs for agent '{agent_name}'")
+        return
+
+    if list_files:
+        # List all log files
         console.print(f"[bold]Logs:[/bold] {log_dir}")
         for log_file in sorted(log_dir.glob("*.log")):
             console.print(f"  {log_file.name}")
+    elif show_all:
+        # Show all logs concatenated
+        all_logs = read_all_logs(agent_name, project_root)
+        if all_logs:
+            console.print(f"[bold]All logs for {agent_name}:[/bold]")
+            console.print(all_logs)
+        else:
+            print_info(f"No logs for agent '{agent_name}'")
     else:
-        print_info(f"No logs for agent '{name}'")
+        # Show tail of latest log (default)
+        content = read_log_tail(agent_name, lines=lines, project_root=project_root)
+        if content:
+            console.print(f"[bold]{agent_name}[/bold] (last {lines} lines)")
+            console.print(content)
+        else:
+            print_info(f"No logs for agent '{agent_name}'")
 
 
 SUMMARIZE_PROMPT = """You are summarizing the work done by a Claude Code agent.
@@ -1847,19 +1941,10 @@ def recover_session(state, project_root: Path) -> bool:
                 except Exception as e:
                     actions_taken.append(f"Failed to complete {agent.name}: {e}")
             else:
-                # Worktree gone but agent marked done - reset to idle
-                # Can't verify work or run tests without worktree, so can't safely auto-merge
-                # Operator can manually find the branch and merge if work was committed
+                # Worktree gone but agent marked done - preserve done status
+                # Work is still committed to the branch and can be merged manually via 'merge <name>'
                 console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done, worktree missing)[/dim]")
-                old_task = agent.task
-                agent.status = "idle"
-                agent.worktree = None
-                agent.branch = ""
-                agent.task = None
-                agent.session = ""
-                agent.step_count = 0
-                agent.last_step_at = None
-                actions_taken.append(f"Reset {agent.name} to idle (done but worktree missing, ticket {old_task} stays open)")
+                console.print(f"    [dim]Branch {agent.branch} may have committed work. Use 'merge {agent.name}' to complete.[/dim]")
         elif agent.status == "stuck":
             console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](stuck)[/dim]")
         else:
