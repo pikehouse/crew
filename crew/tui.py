@@ -815,6 +815,91 @@ class ConfirmKillScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class TicketDetailsScreen(ModalScreen[None]):
+    """Modal screen displaying full ticket details."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("enter", "close", "Close"),
+        Binding("q", "close", "Close"),
+    ]
+
+    DEFAULT_CSS = """
+    TicketDetailsScreen {
+        align: center middle;
+    }
+
+    TicketDetailsScreen > Vertical {
+        width: 70;
+        height: auto;
+        max-height: 80%;
+        background: $surface;
+        border: thick $primary;
+        padding: 1 2;
+    }
+
+    TicketDetailsScreen > Vertical > Static {
+        width: 100%;
+        margin-bottom: 1;
+    }
+
+    TicketDetailsScreen > Vertical > #ticket-title {
+        text-style: bold;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    TicketDetailsScreen > Vertical > #ticket-meta {
+        color: $text-muted;
+    }
+
+    TicketDetailsScreen > Vertical > #ticket-description {
+        margin-top: 1;
+        padding: 1;
+        background: $surface-darken-1;
+    }
+
+    TicketDetailsScreen > Vertical > #close-hint {
+        margin-top: 1;
+        text-align: center;
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, ticket_data: TicketData) -> None:
+        """Initialize the ticket details screen.
+
+        Args:
+            ticket_data: The ticket data to display.
+        """
+        super().__init__()
+        self.ticket_data = ticket_data
+
+    def compose(self) -> ComposeResult:
+        """Compose the ticket details dialog."""
+        t = self.ticket_data
+        with Vertical():
+            # Title
+            yield Static(f"[bold cyan]{t.id}[/bold cyan] {t.title}", id="ticket-title")
+
+            # Metadata
+            meta_lines = []
+            meta_lines.append(f"[bold]Status:[/bold] {t.status}")
+            if t.deps:
+                meta_lines.append(f"[bold]Dependencies:[/bold] {', '.join(t.deps)}")
+            else:
+                meta_lines.append("[bold]Dependencies:[/bold] None")
+
+            yield Static("\n".join(meta_lines), id="ticket-meta")
+
+            # Close hint
+            yield Static("[dim]Press Enter, Esc, or q to close[/dim]", id="close-hint")
+
+    def action_close(self) -> None:
+        """Close the details screen."""
+        self.dismiss(None)
+
+
 class CrewApp(App):
     """A Textual app for managing crew agents."""
 
@@ -907,7 +992,7 @@ class CrewApp(App):
             ("t", "Toggle agents/tickets view"),
             ("m", "Merge selected agent"),
             ("k", "Kill selected agent"),
-            ("Enter", "Zoom into selected ticket"),
+            ("Enter", "Show ticket details / zoom in"),
         ]
         with Center(id="help-overlay-container"):
             with Middle():
@@ -1083,7 +1168,7 @@ class CrewApp(App):
             tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
 
     def action_zoom_in(self) -> None:
-        """Zoom into the selected ticket to show its dependency tree."""
+        """Show details for the selected ticket and zoom into its dependency tree."""
         if self._show_agents:
             return  # Only works in ticket view
 
@@ -1097,7 +1182,10 @@ class CrewApp(App):
         if ticket_data is None:
             return  # Category node selected, not a ticket
 
-        # Zoom into this ticket
+        # Show the ticket details screen
+        self.push_screen(TicketDetailsScreen(ticket_data))
+
+        # Also zoom into this ticket
         self._zoomed_ticket = ticket_data.id
         tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
 
