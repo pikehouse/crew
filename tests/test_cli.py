@@ -1414,13 +1414,13 @@ class TestDashboardLiveMode:
         """Test dashboard accepts -l flag for live mode."""
         with patch("crew.cli._run_live_dashboard") as mock_live:
             cmd_dashboard(empty_state, ["-l"], project_root)
-            mock_live.assert_called_once_with(empty_state, project_root)
+            mock_live.assert_called_once_with(empty_state, project_root, show_summaries=False)
 
     def test_dashboard_accepts_live_flag(self, empty_state: State, project_root: Path):
         """Test dashboard accepts --live flag for live mode."""
         with patch("crew.cli._run_live_dashboard") as mock_live:
             cmd_dashboard(empty_state, ["--live"], project_root)
-            mock_live.assert_called_once_with(empty_state, project_root)
+            mock_live.assert_called_once_with(empty_state, project_root, show_summaries=False)
 
     def test_dashboard_without_flag_not_live(self, empty_state: State, project_root: Path):
         """Test dashboard without flag does not run in live mode."""
@@ -1445,3 +1445,34 @@ class TestDashboardLiveMode:
         with patch("crew.cli._run_live_dashboard") as mock_live:
             handle_command("s --live", empty_state, project_root)
             mock_live.assert_called_once()
+
+
+class TestDashboardSummaryMode:
+    """Test the dashboard summary mode flag parsing."""
+
+    def test_dashboard_accepts_s_flag(self, empty_state: State, project_root: Path):
+        """Test dashboard accepts -s flag for summary mode."""
+        with patch("crew.cli.render_dashboard") as mock_render:
+            mock_render.return_value = ""
+            cmd_dashboard(empty_state, ["-s"], project_root)
+            mock_render.assert_called_once_with(empty_state, project_root, False, show_summaries=True)
+
+    def test_dashboard_accepts_summary_flag(self, empty_state: State, project_root: Path):
+        """Test dashboard accepts --summary flag for summary mode."""
+        with patch("crew.cli.render_dashboard") as mock_render:
+            mock_render.return_value = ""
+            cmd_dashboard(empty_state, ["--summary"], project_root)
+            mock_render.assert_called_once_with(empty_state, project_root, False, show_summaries=True)
+
+    def test_dashboard_without_s_flag_no_summaries(self, empty_state: State, project_root: Path):
+        """Test dashboard without -s flag does not show summaries."""
+        with patch("crew.cli.render_dashboard") as mock_render:
+            mock_render.return_value = ""
+            cmd_dashboard(empty_state, [], project_root)
+            mock_render.assert_called_once_with(empty_state, project_root, False, show_summaries=False)
+
+    def test_dashboard_live_and_summary_flags(self, empty_state: State, project_root: Path):
+        """Test dashboard accepts both -l and -s flags together."""
+        with patch("crew.cli._run_live_dashboard") as mock_live:
+            cmd_dashboard(empty_state, ["-l", "-s"], project_root)
+            mock_live.assert_called_once_with(empty_state, project_root, show_summaries=True)
