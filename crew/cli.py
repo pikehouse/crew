@@ -1767,11 +1767,13 @@ def render_dashboard(state, project_root: Path, runner_active: bool = False, sho
 
         renderables.append(table)
 
+        # Color palette for agent panels
+        colors = ["cyan", "green", "yellow", "magenta", "blue", "red"]
+
         # Log tail panels for working agents
         working_agents = [a for a in state.agents.values() if a.status in ("ready", "working")]
         if working_agents:
             renderables.append(Text(""))  # Empty line
-            colors = ["cyan", "green", "yellow", "magenta", "blue", "red"]
             for i, agent in enumerate(working_agents):
                 color = colors[i % len(colors)]
                 content = read_log_tail(agent.name, lines=5, project_root=project_root)
