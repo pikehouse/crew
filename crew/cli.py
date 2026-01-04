@@ -756,7 +756,7 @@ def cmd_logs(state, args: list[str], project_root: Path) -> None:
 
 
 def cmd_kill(state, args: list[str], project_root: Path) -> None:
-    """Stop an agent but keep worktree."""
+    """Stop an agent and release its task so another agent can pick it up."""
     if not args:
         print_error("Usage: kill <name>")
         return
@@ -768,9 +768,15 @@ def cmd_kill(state, args: list[str], project_root: Path) -> None:
         print_error(f"Agent '{name}' not found")
         return
 
+    old_task = agent.task
     agent.status = "idle"
+    agent.task = None  # Release task so another agent can pick it up
     save_state(state, project_root)
-    print_info(f"Stopped agent '{name}'. Worktree preserved at {agent.worktree}")
+
+    if old_task:
+        print_info(f"Stopped agent '{name}', released task {old_task}. Worktree preserved at {agent.worktree}")
+    else:
+        print_info(f"Stopped agent '{name}'. Worktree preserved at {agent.worktree}")
 
 
 def cmd_cleanup(state, args: list[str], project_root: Path) -> None:
