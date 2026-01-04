@@ -1,6 +1,6 @@
 ---
 id: c-d3f4
-status: open
+status: closed
 deps: []
 created: 2026-01-03T19:04:50Z
 type: task

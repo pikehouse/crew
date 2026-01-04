@@ -828,17 +828,16 @@ class TestTicketCloseCommittedWithMerge:
         assert uncommitted_changes == [], \
             f"Ticket close should be committed, but found uncommitted changes:\n{uncommitted_changes}"
 
-        # Verify 3: The ticket change should be in the commit history
+        # Verify 3: The ticket close commit should be in the commit history
         result = subprocess.run(
             ["git", "log", "--oneline", "-5"],
             cwd=sample_project,
             capture_output=True,
             text=True,
         )
-        # There should be a merge commit that includes the ticket close
-        assert "agent/close-commit-worker-t-0002" in result.stdout or \
-               "close-commit-worker" in result.stdout.lower(), \
-            f"Merge commit should reference the agent branch, got:\n{result.stdout}"
+        # There should be a commit that closes the ticket
+        assert "Close ticket t-0002" in result.stdout, \
+            f"Ticket close commit should be in history, got:\n{result.stdout}"
 
     def test_ticket_file_shows_closed_status_in_git_log(self, sample_project: Path):
         """Test that the ticket file with status=closed appears in git log.

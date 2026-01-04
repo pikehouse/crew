@@ -293,10 +293,16 @@ class TestStartupRecoveryIntegration:
         assert agent.step_count == 0
         assert agent.last_step_at is None
 
-    def test_recovery_preserves_done_agent_with_missing_worktree(
+    def test_recovery_resets_done_agent_with_missing_worktree(
         self, project_root: Path
     ):
-        """Test that done agents are preserved even if worktree is gone."""
+        """Test that done agents with missing worktrees are reset to idle.
+
+        When a done agent's worktree is missing, there's no way to verify the work
+        or run tests before merging. The safest approach is to reset to idle so
+        the operator can manually handle the situation (e.g., find the branch
+        and merge it manually if the work was committed).
+        """
         state = State()
         agent = Agent(
             name="done-preserve",
@@ -312,9 +318,9 @@ class TestStartupRecoveryIntegration:
             mock_worktrees.return_value = []
             recover_session(state, project_root)
 
-        # Status should remain done
-        assert agent.status == "done"
-        assert agent.task == "finished-task"
+        # Agent should be reset to idle since worktree is missing
+        assert agent.status == "idle"
+        assert agent.task is None
 
     def test_recovery_calls_shutdown_agent_correctly(
         self, temp_dir: Path
