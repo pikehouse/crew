@@ -33,7 +33,7 @@ from crew.display import (
     print_git_status_panels,
     get_status_icon,
 )
-from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks, shutdown_agent
+from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks, shutdown_agent, find_claude_process
 from crew.crew_logging import read_log_tail, read_all_logs
 from crew.git import get_worktree_list, has_uncommitted_changes, remove_worktree
 
@@ -1449,12 +1449,13 @@ def render_dashboard(state, project_root: Path, runner_active: bool = False, sho
     renderables.append(Text.from_markup(f"[bold]Session:[/bold] {total_tokens:,} tokens, ${total_cost:.4f}"))
     renderables.append(Text(""))  # Empty line
 
-    # Agent table with columns: NAME, TASK, STATUS, STEPS, TOKENS, COST
+    # Agent table with columns: NAME, TASK, STATUS, PROC, STEPS, TOKENS, COST
     if state.agents:
         table = Table(show_header=True, header_style="bold")
         table.add_column("NAME")
         table.add_column("TASK")
         table.add_column("STATUS")
+        table.add_column("PROC", justify="center")
         table.add_column("STEPS", justify="right")
         table.add_column("TOKENS", justify="right")
         table.add_column("COST", justify="right")
@@ -1470,6 +1471,15 @@ def render_dashboard(state, project_root: Path, runner_active: bool = False, sho
             }
             style = status_styles.get(agent.status, "")
 
+            # Check if Claude process is actually running for this agent
+            proc_indicator = "-"
+            if agent.status in ("ready", "working"):
+                pid = find_claude_process(agent)
+                if pid:
+                    proc_indicator = Text("●", style="green")  # Process running
+                else:
+                    proc_indicator = Text("⚠", style="bold red")  # Dead process warning
+
             # Calculate tokens
             tokens = agent.total_input_tokens + agent.total_output_tokens
 
@@ -1477,6 +1487,7 @@ def render_dashboard(state, project_root: Path, runner_active: bool = False, sho
                 agent.name,
                 agent.task or "-",
                 Text(agent.status, style=style),
+                proc_indicator,
                 str(agent.step_count),
                 f"{tokens:,}" if tokens else "-",
                 f"${agent.total_cost_usd:.4f}" if agent.total_cost_usd else "-",

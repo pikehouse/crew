@@ -20,6 +20,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Header, Footer, Tree, Static, Button, Label
 
 from crew.state import load_state, save_state
+from crew.runner import find_claude_process
 
 if TYPE_CHECKING:
     from crew.cli import BackgroundRunner
@@ -680,7 +681,7 @@ class CrewApp(App):
         """Set up the app when it mounts."""
         # Set up agents table
         table = self.query_one("#agents", DataTable)
-        table.add_columns("Name", "Task", "Status", "Steps", "Cost")
+        table.add_columns("Name", "Task", "Status", "Proc", "Steps", "Cost")
         self._refresh_agents(table)
 
         # Initialize event log
@@ -742,10 +743,19 @@ class CrewApp(App):
         state = load_state()
         for agent in state.agents.values():
             cost_str = f"${agent.total_cost_usd:.2f}" if agent.total_cost_usd > 0 else "-"
+            # Check if Claude process is actually running for this agent
+            proc_indicator = "-"
+            if agent.status in ("ready", "working"):
+                pid = find_claude_process(agent)
+                if pid:
+                    proc_indicator = Text("●", style="green")  # Process running
+                else:
+                    proc_indicator = Text("⚠", style="bold red")  # Dead process warning
             table.add_row(
                 agent.name,
                 agent.task or "-",
                 agent.status,
+                proc_indicator,
                 str(agent.step_count),
                 cost_str,
             )

@@ -77,6 +77,7 @@ class TestDashboardCommand:
         assert "NAME" in captured.out
         assert "TASK" in captured.out
         assert "STATUS" in captured.out
+        assert "PROC" in captured.out
         assert "STEPS" in captured.out
         assert "TOKENS" in captured.out
         assert "COST" in captured.out
