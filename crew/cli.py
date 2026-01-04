@@ -756,7 +756,11 @@ def cmd_logs(state, args: list[str], project_root: Path) -> None:
 
 
 def cmd_kill(state, args: list[str], project_root: Path) -> None:
-    """Stop an agent and release its task so another agent can pick it up."""
+    """Stop an agent, release its task, and remove worktree.
+
+    Committed work stays on the agent's branch. The task becomes
+    available for another agent to pick up.
+    """
     if not args:
         print_error("Usage: kill <name>")
         return
@@ -769,14 +773,28 @@ def cmd_kill(state, args: list[str], project_root: Path) -> None:
         return
 
     old_task = agent.task
+    old_worktree = agent.worktree
+
+    # Remove worktree if it exists (committed work stays on branch)
+    if old_worktree and old_worktree.exists():
+        try:
+            remove_worktree(old_worktree)
+        except Exception as e:
+            print_error(f"Failed to remove worktree: {e}")
+            # Continue anyway - reset agent state
+
+    # Reset agent to clean idle state
     agent.status = "idle"
-    agent.task = None  # Release task so another agent can pick it up
+    agent.task = None
+    agent.worktree = None
+    agent.branch = ""
+    agent.session = ""
     save_state(state, project_root)
 
     if old_task:
-        print_info(f"Stopped agent '{name}', released task {old_task}. Worktree preserved at {agent.worktree}")
+        print_info(f"Killed agent '{name}', released task {old_task}. Ready for new work.")
     else:
-        print_info(f"Stopped agent '{name}'. Worktree preserved at {agent.worktree}")
+        print_info(f"Killed agent '{name}'. Ready for new work.")
 
 
 def cmd_cleanup(state, args: list[str], project_root: Path) -> None:
