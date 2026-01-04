@@ -153,6 +153,26 @@ def format_crew_merge_message(agent: Agent) -> str:
     return message
 
 
+def summarize_diff(worktree: Path, base_branch: str = "main") -> str:
+    """Summarize the diff between the agent's branch and a base branch.
+
+    Returns a human-readable summary of changed files with stats.
+
+    Args:
+        worktree: Path to the agent's worktree
+        base_branch: Branch to compare against (default: main)
+
+    Returns:
+        Summary string with files changed, insertions, and deletions
+    """
+    try:
+        # Get stat summary (files changed, insertions, deletions)
+        stat = run_git("diff", "--stat", f"{base_branch}...HEAD", cwd=worktree)
+        return stat if stat else "No changes"
+    except Exception:
+        return "Unable to generate diff summary"
+
+
 def generate_session_id() -> str:
     """Generate a new session ID (UUID)."""
     return str(uuid.uuid4())

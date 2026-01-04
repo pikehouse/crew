@@ -24,6 +24,7 @@ from crew.runner import (
     shutdown_agent,
     spawn_worker,
     step_agent,
+    summarize_diff,
 )
 from crew.state import State, save_state, load_state
 
@@ -1687,3 +1688,50 @@ class TestShutdownAgent:
                 shutdown_agent(agent, state, project_root)
 
         mock_check.assert_called_once_with(agent, project_root)
+
+
+class TestSummarizeDiff:
+    """Tests for summarize_diff function."""
+
+    def test_summarize_diff_returns_stat_output(self, temp_dir: Path):
+        """summarize_diff returns git diff --stat output."""
+        expected_stat = " file1.py | 10 +++++\n file2.py | 5 ---\n 2 files changed, 10 insertions(+), 5 deletions(-)"
+
+        with patch("crew.runner.run_git") as mock_git:
+            mock_git.return_value = expected_stat
+
+            result = summarize_diff(temp_dir)
+
+            mock_git.assert_called_once_with(
+                "diff", "--stat", "main...HEAD", cwd=temp_dir
+            )
+            assert result == expected_stat
+
+    def test_summarize_diff_uses_custom_base_branch(self, temp_dir: Path):
+        """summarize_diff uses custom base branch."""
+        with patch("crew.runner.run_git") as mock_git:
+            mock_git.return_value = "1 file changed"
+
+            summarize_diff(temp_dir, base_branch="develop")
+
+            mock_git.assert_called_once_with(
+                "diff", "--stat", "develop...HEAD", cwd=temp_dir
+            )
+
+    def test_summarize_diff_returns_no_changes_when_empty(self, temp_dir: Path):
+        """summarize_diff returns 'No changes' when diff is empty."""
+        with patch("crew.runner.run_git") as mock_git:
+            mock_git.return_value = ""
+
+            result = summarize_diff(temp_dir)
+
+            assert result == "No changes"
+
+    def test_summarize_diff_handles_exception(self, temp_dir: Path):
+        """summarize_diff returns error message on exception."""
+        with patch("crew.runner.run_git") as mock_git:
+            mock_git.side_effect = Exception("Git error")
+
+            result = summarize_diff(temp_dir)
+
+            assert result == "Unable to generate diff summary"
