@@ -10,15 +10,18 @@ import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.widgets import DataTable, Header, Footer, Tree
+from textual.widgets import DataTable, Header, Footer, Tree, Static
 
 from crew.state import load_state
+
+if TYPE_CHECKING:
+    from crew.cli import BackgroundRunner
 
 
 @dataclass
@@ -439,6 +442,39 @@ class TicketTree(Tree[TicketData]):
         self.root.expand()
 
 
+class EventLog(Static):
+    """A widget to display recent runner events."""
+
+    DEFAULT_CSS = """
+    EventLog {
+        height: 5;
+        width: 100%;
+        border-top: solid $primary;
+        padding: 0 1;
+        background: $surface;
+    }
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._events: list[str] = []
+        self._max_events = 4
+
+    def add_event(self, event_text: str) -> None:
+        """Add an event to the log."""
+        self._events.append(event_text)
+        if len(self._events) > self._max_events:
+            self._events = self._events[-self._max_events:]
+        self._update_display()
+
+    def _update_display(self) -> None:
+        """Update the display with current events."""
+        if self._events:
+            self.update("\n".join(self._events))
+        else:
+            self.update("[dim]No recent events[/dim]")
+
+
 class CrewApp(App):
     """A Textual app for managing crew agents."""
 
@@ -451,7 +487,7 @@ class CrewApp(App):
 
     CSS = """
     #main-container {
-        height: 100%;
+        height: 1fr;
     }
     #ticket-tree {
         width: 40%;
@@ -464,10 +500,17 @@ class CrewApp(App):
     }
     """
 
-    def __init__(self):
+    def __init__(self, runner: BackgroundRunner | None = None) -> None:
+        """Initialize the app.
+
+        Args:
+            runner: Optional BackgroundRunner instance to poll for events.
+        """
         super().__init__()
         self._show_agents = True  # Start with agents view
         self._zoomed_ticket: str | None = None  # Ticket ID when zoomed
+        self._runner = runner
+        self._poll_timer = None
 
     def compose(self) -> ComposeResult:
         """Compose the app layout with split view."""
@@ -475,6 +518,7 @@ class CrewApp(App):
         with Horizontal(id="main-container"):
             yield TicketTree(id="ticket-tree")
             yield DataTable(id="agents")
+        yield EventLog(id="event-log")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -483,6 +527,59 @@ class CrewApp(App):
         table = self.query_one("#agents", DataTable)
         table.add_columns("Name", "Task", "Status", "Steps", "Cost")
         self._refresh_agents(table)
+
+        # Initialize event log
+        event_log = self.query_one("#event-log", EventLog)
+        event_log._update_display()
+
+        # Start polling for runner events if runner is provided
+        if self._runner:
+            self._poll_timer = self.set_interval(0.5, self._poll_runner_events)
+
+    def _poll_runner_events(self) -> None:
+        """Poll for events from BackgroundRunner and update UI."""
+        if not self._runner:
+            return
+
+        events = self._runner.drain_events()
+        if not events:
+            return
+
+        event_log = self.query_one("#event-log", EventLog)
+        needs_refresh = False
+
+        for event in events:
+            # Format event for display
+            if event.type == "step":
+                event_text = f"[cyan]↻[/cyan] {event.agent_name}: {event.message}"
+                needs_refresh = True
+            elif event.type == "done":
+                event_text = f"[green]✓[/green] {event.agent_name} completed {event.message}"
+                needs_refresh = True
+            elif event.type == "merged":
+                event_text = f"[green]⎇[/green] {event.agent_name} merged {event.message}"
+                needs_refresh = True
+            elif event.type == "assigned":
+                event_text = f"[yellow]→[/yellow] {event.agent_name} assigned {event.message}"
+                needs_refresh = True
+            elif event.type == "error":
+                event_text = f"[red]✗[/red] {event.agent_name}: {event.message}"
+                needs_refresh = True
+            elif event.type == "stopped":
+                event_text = f"[blue]■[/blue] Runner stopped: {event.message}"
+            else:
+                event_text = f"{event.type}: {event.agent_name} {event.message}"
+
+            event_log.add_event(event_text)
+
+        # Refresh views if agent state changed
+        if needs_refresh:
+            table = self.query_one("#agents", DataTable)
+            self._refresh_agents(table)
+            # Also refresh tickets on done/merged since task might be closed
+            if any(e.type in ("done", "merged") for e in events):
+                tree = self.query_one("#ticket-tree", TicketTree)
+                tree.refresh_tickets()
 
     def _refresh_agents(self, table: DataTable) -> None:
         """Refresh the agents table with current state."""
@@ -550,9 +647,13 @@ class CrewApp(App):
             self.exit()
 
 
-def main():
-    """Run the TUI application."""
-    app = CrewApp()
+def main(runner: BackgroundRunner | None = None):
+    """Run the TUI application.
+
+    Args:
+        runner: Optional BackgroundRunner instance for live event updates.
+    """
+    app = CrewApp(runner=runner)
     app.run()
 
 
