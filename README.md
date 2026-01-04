@@ -38,29 +38,64 @@ pip install -e .
 
 ## Usage
 
+First, create tickets using [`tk`](https://github.com/wedow/ticket#):
+
+```bash
+tk create "Add user authentication"
+tk create "Write auth tests" --dep c-xxxx  # depends on auth ticket
+tk create "Update API docs"
+```
+
+Then run crew to orchestrate agents:
+
 ```bash
 cd your-project
 crew
+```
+
+Inside crew, spawn workers and run:
+
+```bash
+crew> spawn 3        # spawn 3 workers (named a, b, c)
+✓ Created 3 workers: a, b, c
+
+crew> run            # auto-assign ready tickets and run
+  ▶ a assigned c-xxxx
+  ▶ b assigned c-yyyy
+  → a: Starting work on authentication...
+  → b: Updating API docs...
+  ✓ b completed c-yyyy
+  ✓ Merged agent/b-c-yyyy to main
+  ✓ a completed c-xxxx
+  ✓ Merged agent/a-c-xxxx to main
+  ▶ a assigned c-zzzz   # auto-picks up unblocked ticket
+  ...
 ```
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `status`, `s` | Show all agents and queue |
-| `spawn <name> [task]` | Create agent on task (or next ready) |
-| `step <name>` | Run one step for agent |
-| `run` | Continuously step all agents |
+| `d`, `s`, `status`, `dashboard` | Show dashboard with agents and status |
+| `spawn <n>` | Create n idle workers (auto-named a, b, c...) |
+| `spawn <name> [task]` | Create named worker, optionally with task |
+| `run` | Auto-assign tasks and run all agents |
+| `stop` | Stop the runner, pause agents |
+| `ready`, `r` | Show ready tickets (from tk) |
+| `queue`, `q` | Show full ticket queue with waves |
 | `peek <name>` | Show agent's recent output |
 | `logs <name>` | Show log directory |
+| `ps` | Show running claude processes |
 | `kill <name>` | Stop agent, keep worktree |
 | `cleanup <name>` | Remove agent and worktree |
 | `merge <name>` | Merge agent's branch to main |
-| `ready`, `r` | Show ready tickets |
-| `new <title>` | Create ticket |
-| `assign <name> <id>` | Assign ticket to agent |
-| `help` | Show commands |
-| `quit`, `q` | Exit |
+| `new <title>` | Create ticket (via tk) |
+| `dep <ticket> <blocker>` | Add dependency between tickets |
+| `assign <name> <id>` | Manually assign ticket to agent |
+| `reset <commit>` | Reset everything to a git commit |
+| `clean` | Wipe all crew state |
+| `help`, `h` | Show commands |
+| `quit`, `exit` | Exit crew |
 
 ## How It Works
 
