@@ -950,7 +950,7 @@ class TestCompleteTask:
 
             complete_task(agent, state, project_root=project_root)
 
-            mock_delete.assert_called_once_with("agent/test-branch")
+            mock_delete.assert_called_once_with("agent/test-branch", cwd=project_root)
 
     def test_complete_task_returns_success_tuple(self, project_root: Path):
         """complete_task returns (True, None) on success."""

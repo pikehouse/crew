@@ -510,9 +510,11 @@ def complete_task(
 
     # Tests passed - proceed with merge
 
-    # Close the ticket
+    # Close the ticket FIRST - if this fails, don't proceed with merge
+    # This prevents the infinite loop where task gets re-assigned
     if agent.task:
-        close_ticket(agent.task)
+        if not close_ticket(agent.task):
+            raise RuntimeError(f"Failed to close ticket {agent.task}. Check tk status.")
 
     # Store branch name before removing worktree
     branch_to_merge = agent.branch
@@ -529,6 +531,7 @@ def complete_task(
         merge_branch(
             branch_to_merge,
             message=format_crew_merge_message(agent),
+            cwd=project_root,
         )
     except Exception as e:
         # Merge failed - likely conflicts. Try to resolve with Claude.
@@ -545,9 +548,19 @@ def complete_task(
 
     # Delete the branch
     try:
-        delete_branch(branch_to_merge)
+        delete_branch(branch_to_merge, cwd=project_root)
     except:
         pass  # Branch might already be deleted
+
+    # Commit the ticket close change (tk close modifies .tickets/xxx.md)
+    # This ensures the ticket status is part of git history, not left uncommitted
+    if agent.task:
+        ticket_file = f".tickets/{agent.task}.md"
+        try:
+            run_git("add", ticket_file, cwd=project_root)
+            run_git("commit", "-m", f"Close ticket {agent.task}", cwd=project_root)
+        except:
+            pass  # May fail if file unchanged or doesn't exist
 
     # Reset agent to idle (ready for next task)
     agent.session = ""
@@ -586,10 +599,15 @@ def spawn_agent(
     return agent
 
 
-def close_ticket(task_id: str) -> None:
-    """Close a ticket using tk."""
+def close_ticket(task_id: str) -> bool:
+    """Close a ticket using tk.
+
+    Returns:
+        True if ticket was closed successfully, False otherwise.
+    """
     import subprocess
-    subprocess.run(["tk", "close", task_id], capture_output=True)
+    result = subprocess.run(["tk", "close", task_id], capture_output=True)
+    return result.returncode == 0
 
 
 def step_agent(
@@ -689,8 +707,9 @@ def cleanup_agent(
             merge_branch(
                 agent.branch,
                 message=format_crew_merge_message(agent),
+                cwd=project_root,
             )
-            delete_branch(agent.branch)
+            delete_branch(agent.branch, cwd=project_root)
         except Exception as e:
             raise RuntimeError(f"Merge failed: {e}. Resolve conflicts manually.")
 

@@ -336,11 +336,14 @@ class TestStartupRecoveryIntegration:
         )
         state.add_agent(agent)
 
-        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+        with patch("crew.cli.get_worktree_list") as mock_worktrees, \
+             patch("crew.cli.has_uncommitted_changes") as mock_uncommitted, \
+             patch("crew.cli.shutdown_agent") as mock_shutdown, \
+             patch("crew.cli.remove_worktree"):
             mock_worktrees.return_value = [{"path": str(worktree_path)}]
-            with patch("crew.cli.shutdown_agent") as mock_shutdown:
-                mock_shutdown.return_value = "partial"
-                recover_session(state, temp_dir)
+            mock_uncommitted.return_value = False  # Clean worktree goes to shutdown_agent path
+            mock_shutdown.return_value = "partial"
+            recover_session(state, temp_dir)
 
         # shutdown_agent should have been called with the agent and state
         mock_shutdown.assert_called_once()
@@ -414,11 +417,14 @@ class TestWorktreeReconciliation:
         )
         state.add_agent(agent)
 
-        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+        with patch("crew.cli.get_worktree_list") as mock_worktrees, \
+             patch("crew.cli.has_uncommitted_changes") as mock_uncommitted, \
+             patch("crew.cli.shutdown_agent") as mock_shutdown, \
+             patch("crew.cli.remove_worktree"):
             mock_worktrees.return_value = [{"path": str(worktree_dir)}]
-            with patch("crew.cli.shutdown_agent") as mock_shutdown:
-                mock_shutdown.return_value = "partial"
-                recover_session(state, temp_dir)
+            mock_uncommitted.return_value = False  # Clean worktree
+            mock_shutdown.return_value = "partial"
+            recover_session(state, temp_dir)
 
         # shutdown_agent should have been called for reconciliation
         mock_shutdown.assert_called_once()
@@ -579,14 +585,19 @@ class TestRecoveryActionMessages:
         )
         state.add_agent(agent)
 
-        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+        with patch("crew.cli.get_worktree_list") as mock_worktrees, \
+             patch("crew.cli.has_uncommitted_changes") as mock_uncommitted, \
+             patch("crew.cli.shutdown_agent") as mock_shutdown, \
+             patch("crew.cli.complete_task") as mock_complete:
             mock_worktrees.return_value = [{"path": str(worktree_path)}]
-            with patch("crew.cli.shutdown_agent") as mock_shutdown:
-                mock_shutdown.return_value = "done"
-                recover_session(state, temp_dir)
+            mock_uncommitted.return_value = False
+            mock_shutdown.return_value = "done"
+            mock_complete.return_value = (True, None)
+            recover_session(state, temp_dir)
 
         captured = capsys.readouterr()
-        assert "Marked done-from-logs as done" in captured.out
+        # When done, complete_task is called which merges the branch
+        assert "Completed done-from-logs" in captured.out
 
     def test_partial_action_message(self, temp_dir: Path, capsys):
         """Test action message for partial work."""
@@ -605,11 +616,14 @@ class TestRecoveryActionMessages:
         )
         state.add_agent(agent)
 
-        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+        with patch("crew.cli.get_worktree_list") as mock_worktrees, \
+             patch("crew.cli.has_uncommitted_changes") as mock_uncommitted, \
+             patch("crew.cli.shutdown_agent") as mock_shutdown, \
+             patch("crew.cli.remove_worktree"):
             mock_worktrees.return_value = [{"path": str(worktree_path)}]
-            with patch("crew.cli.shutdown_agent") as mock_shutdown:
-                mock_shutdown.return_value = "partial"
-                recover_session(state, temp_dir)
+            mock_uncommitted.return_value = False
+            mock_shutdown.return_value = "partial"
+            recover_session(state, temp_dir)
 
         captured = capsys.readouterr()
         assert "partial work" in captured.out
@@ -631,14 +645,17 @@ class TestRecoveryActionMessages:
         )
         state.add_agent(agent)
 
-        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+        with patch("crew.cli.get_worktree_list") as mock_worktrees, \
+             patch("crew.cli.has_uncommitted_changes") as mock_uncommitted, \
+             patch("crew.cli.shutdown_agent") as mock_shutdown, \
+             patch("crew.cli.remove_worktree"):
             mock_worktrees.return_value = [{"path": str(worktree_path)}]
-            with patch("crew.cli.shutdown_agent") as mock_shutdown:
-                mock_shutdown.return_value = "nothing"
-                recover_session(state, temp_dir)
+            mock_uncommitted.return_value = False
+            mock_shutdown.return_value = "nothing"
+            recover_session(state, temp_dir)
 
         captured = capsys.readouterr()
-        assert "Reset nothing-done to ready" in captured.out
+        assert "Reset nothing-done to idle (no work done, ticket stays open)" in captured.out
 
     def test_worktree_missing_action_message(self, project_root: Path, capsys):
         """Test action message when worktree is missing."""
@@ -682,12 +699,15 @@ class TestRecoverySummary:
         )
         state.add_agent(agent)
 
-        with patch("crew.cli.get_worktree_list") as mock_worktrees:
+        with patch("crew.cli.get_worktree_list") as mock_worktrees, \
+             patch("crew.cli.has_uncommitted_changes") as mock_uncommitted, \
+             patch("crew.cli.shutdown_agent") as mock_shutdown, \
+             patch("crew.cli.remove_worktree"):
             mock_worktrees.return_value = [{"path": str(worktree_path)}]
-            with patch("crew.cli.shutdown_agent") as mock_shutdown:
-                mock_shutdown.return_value = "partial"
-                # Agent stays in working status after partial
-                recover_session(state, temp_dir)
+            mock_uncommitted.return_value = False
+            mock_shutdown.return_value = "partial"
+            # Agent stays in working status after partial
+            recover_session(state, temp_dir)
 
         captured = capsys.readouterr()
         # Should show ready to resume

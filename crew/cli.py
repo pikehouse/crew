@@ -59,6 +59,8 @@ class BackgroundRunner:
         self.events: queue.Queue = queue.Queue()
         # Track which agents are currently being stepped (to avoid double-stepping)
         self._stepping: set = set()
+        # Track recently completed tasks to prevent immediate re-assignment
+        self._recently_completed: set = set()
         # Lock for thread-safe operations
         self._lock = threading.Lock()
         # Store executor reference for clean shutdown
@@ -111,9 +113,11 @@ class BackgroundRunner:
         if not idle_agents:
             return
 
-        # Get ready tasks that aren't already assigned
+        # Get ready tasks that aren't already assigned or recently completed
         assigned = self._get_assigned_tasks()
-        ready_tasks = [t for t in get_ready_tasks() if t not in assigned]
+        with self._lock:
+            skip_tasks = assigned | self._recently_completed
+        ready_tasks = [t for t in get_ready_tasks() if t not in skip_tasks]
 
         # Assign tasks to idle agents
         for agent, task_id in zip(idle_agents, ready_tasks):
@@ -135,9 +139,24 @@ class BackgroundRunner:
                 branch = agent.branch
                 # Complete the task (merge, cleanup, return to idle)
                 try:
-                    complete_task(agent, self.state, self.project_root)
-                    self.events.put(RunnerEvent("done", agent.name, task_id or ""))
-                    self.events.put(RunnerEvent("merged", agent.name, branch))
+                    success, test_output = complete_task(agent, self.state, self.project_root)
+                    if success:
+                        # Track as recently completed to prevent re-assignment race
+                        if task_id:
+                            with self._lock:
+                                self._recently_completed.add(task_id)
+                        self.events.put(RunnerEvent("done", agent.name, task_id or ""))
+                        self.events.put(RunnerEvent("merged", agent.name, branch))
+                    else:
+                        # Tests failed - agent was set back to working, feed test output
+                        self.events.put(RunnerEvent("error", agent.name, f"Tests failed, agent will retry"))
+                        # Step agent again with test failure prompt
+                        from crew.runner import step_agent, TEST_FAILURE_PROMPT
+                        step_agent(
+                            agent, self.state,
+                            prompt=TEST_FAILURE_PROMPT.format(test_output=test_output),
+                            project_root=self.project_root
+                        )
                 except Exception as e:
                     self.events.put(RunnerEvent("error", agent.name, f"Complete failed: {e}"))
 
@@ -1528,16 +1547,10 @@ def recover_session(state, project_root: Path) -> bool:
                 except Exception as e:
                     actions_taken.append(f"Failed to complete {agent.name}: {e}")
             else:
-                # Worktree gone but agent marked done - reset to idle since work is lost
+                # Worktree gone but agent marked done - preserve as done
+                # Work is committed to the branch and can still be merged
                 console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](done, worktree missing)[/dim]")
-                agent.status = "idle"
-                agent.worktree = None
-                agent.branch = ""
-                agent.task = None
-                agent.session = ""
-                agent.step_count = 0
-                agent.last_step_at = None
-                actions_taken.append(f"Reset {agent.name} to idle (done but worktree missing)")
+                # Keep agent as done - can be merged via 'merge <name>' command
         elif agent.status == "stuck":
             console.print(f"  {status_icon} [bold]{agent.name}[/bold]{task_info} [dim](stuck)[/dim]")
         else:

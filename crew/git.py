@@ -69,17 +69,17 @@ def get_current_branch(cwd: Path | None = None) -> str:
     return run_git("branch", "--show-current", cwd=cwd)
 
 
-def merge_branch(branch: str, message: str | None = None) -> None:
+def merge_branch(branch: str, message: str | None = None, cwd: Path | None = None) -> None:
     """Merge a branch into the current branch."""
     args = ["merge", "--no-ff", branch]
     if message:
         args.extend(["-m", message])
-    run_git(*args)
+    run_git(*args, cwd=cwd)
 
 
-def delete_branch(branch: str) -> None:
+def delete_branch(branch: str, cwd: Path | None = None) -> None:
     """Delete a local branch."""
-    run_git("branch", "-d", branch)
+    run_git("branch", "-d", branch, cwd=cwd)
 
 
 def has_uncommitted_changes(cwd: Path | None = None) -> bool:

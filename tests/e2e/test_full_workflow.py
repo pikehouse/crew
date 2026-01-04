@@ -429,7 +429,7 @@ class TestMergeFlowE2E:
 
             complete_task(agent, state, project_root=sample_project)
 
-            mock_delete.assert_called_once_with("agent/branch-delete-worker-t-0002")
+            mock_delete.assert_called_once_with("agent/branch-delete-worker-t-0002", cwd=sample_project)
 
 
 class TestStuckDetectionE2E:
@@ -788,13 +788,15 @@ class TestTicketCloseCommittedWithMerge:
 
         # Create a mock close_ticket that simulates tk close behavior
         # by directly modifying the ticket file to set status=closed
-        def mock_close_ticket(task_id: str) -> None:
+        def mock_close_ticket(task_id: str) -> bool:
             ticket_path = sample_project / ".tickets" / f"{task_id}.md"
             if ticket_path.exists():
                 content = ticket_path.read_text()
                 # Replace status: open with status: closed
                 content = content.replace("status: open", "status: closed")
                 ticket_path.write_text(content)
+                return True
+            return False
 
         # Run complete_task with mocked components
         with patch("crew.runner.close_ticket", side_effect=mock_close_ticket), \
@@ -878,12 +880,14 @@ class TestTicketCloseCommittedWithMerge:
         agent.worktree = sample_project / "agents" / "log-verify-worker-t-0003"
         agent.branch = branch_name
 
-        def mock_close_ticket(task_id: str) -> None:
+        def mock_close_ticket(task_id: str) -> bool:
             ticket_path = sample_project / ".tickets" / f"{task_id}.md"
             if ticket_path.exists():
                 content = ticket_path.read_text()
                 content = content.replace("status: open", "status: closed")
                 ticket_path.write_text(content)
+                return True
+            return False
 
         with patch("crew.runner.close_ticket", side_effect=mock_close_ticket), \
              patch("crew.runner.remove_worktree"), \
@@ -941,12 +945,14 @@ class TestTicketCloseCommittedWithMerge:
         agent1.worktree = sample_project / "agents" / "seq-agent-1-t-0002"
         agent1.branch = branch1
 
-        def mock_close_ticket_1(task_id: str) -> None:
+        def mock_close_ticket_1(task_id: str) -> bool:
             ticket_path = sample_project / ".tickets" / f"{task_id}.md"
             if ticket_path.exists():
                 content = ticket_path.read_text()
                 content = content.replace("status: open", "status: closed")
                 ticket_path.write_text(content)
+                return True
+            return False
 
         with patch("crew.runner.close_ticket", side_effect=mock_close_ticket_1), \
              patch("crew.runner.remove_worktree"), \
@@ -993,12 +999,14 @@ class TestTicketCloseCommittedWithMerge:
         agent2.worktree = sample_project / "agents" / "seq-agent-2-t-0003"
         agent2.branch = branch2
 
-        def mock_close_ticket_2(task_id: str) -> None:
+        def mock_close_ticket_2(task_id: str) -> bool:
             ticket_path = sample_project / ".tickets" / f"{task_id}.md"
             if ticket_path.exists():
                 content = ticket_path.read_text()
                 content = content.replace("status: open", "status: closed")
                 ticket_path.write_text(content)
+                return True
+            return False
 
         with patch("crew.runner.close_ticket", side_effect=mock_close_ticket_2), \
              patch("crew.runner.remove_worktree"), \
