@@ -142,8 +142,12 @@ class TicketTree(Tree[TicketData]):
         """Load tickets when the widget is mounted."""
         self.refresh_tickets()
 
-    def refresh_tickets(self) -> None:
-        """Refresh the ticket tree from tk query."""
+    def refresh_tickets(self, zoomed_ticket: str | None = None) -> None:
+        """Refresh the ticket tree from tk query.
+
+        Args:
+            zoomed_ticket: If set, show the dependency tree for this ticket only.
+        """
         self.clear()
 
         # Fetch tickets
@@ -159,6 +163,139 @@ class TicketTree(Tree[TicketData]):
             tid = t.get("id", "")
             if tid:
                 tickets[tid] = t
+
+        # If zoomed, show the ticket's dependency tree
+        if zoomed_ticket is not None:
+            self._show_zoomed_view(zoomed_ticket, tickets)
+            return
+
+        # Otherwise show the normal wave-based view
+        self._show_wave_view(tickets)
+
+    def _show_zoomed_view(
+        self, zoomed_ticket: str, tickets: dict[str, dict[str, Any]]
+    ) -> None:
+        """Show the zoomed dependency tree for a specific ticket.
+
+        Args:
+            zoomed_ticket: The ticket ID to focus on.
+            tickets: All tickets data.
+        """
+        if zoomed_ticket not in tickets:
+            no_ticket = self.root.add(
+                Text(f"Ticket {zoomed_ticket} not found", style="red"),
+                data=None,
+            )
+            no_ticket.allow_expand = False
+            return
+
+        t = tickets[zoomed_ticket]
+        title = t.get("title", zoomed_ticket)
+        status = t.get("status", "")
+        deps = t.get("deps", [])
+
+        # Change root label to indicate zoomed mode
+        self.root.set_label(Text(f"Zoomed: {zoomed_ticket}", style="bold magenta"))
+
+        # Create the focused ticket as the main node
+        status_style = "green" if status == "open" else "dim"
+        main_label = Text()
+        main_label.append(zoomed_ticket, style=f"bold cyan")
+        main_label.append(f" {title}", style="bold")
+        main_label.append(f" [{status}]", style=status_style)
+
+        main_data = TicketData(
+            id=zoomed_ticket,
+            title=title,
+            status=status,
+            deps=deps,
+            wave=0,
+        )
+        main_node = self.root.add(main_label, data=main_data)
+        main_node.expand()
+
+        # Add dependencies (tickets this one depends on)
+        if deps:
+            deps_node = main_node.add(
+                Text("Dependencies (blocks this)", style="yellow"),
+                data=None,
+            )
+            deps_node.expand()
+            for dep_id in sorted(deps):
+                if dep_id in tickets:
+                    dep_t = tickets[dep_id]
+                    dep_title = dep_t.get("title", dep_id)
+                    dep_status = dep_t.get("status", "")
+                    dep_deps = dep_t.get("deps", [])
+
+                    dep_style = "dim" if dep_status != "open" else ""
+                    label = Text()
+                    label.append(dep_id, style=f"cyan {dep_style}".strip())
+                    label.append(f" {dep_title}", style=dep_style)
+                    label.append(f" [{dep_status}]", style="dim")
+
+                    dep_data = TicketData(
+                        id=dep_id,
+                        title=dep_title,
+                        status=dep_status,
+                        deps=dep_deps,
+                        wave=0,
+                    )
+                    node = deps_node.add(label, data=dep_data)
+                    node.allow_expand = False
+                else:
+                    # Dependency not found (external or deleted)
+                    label = Text()
+                    label.append(dep_id, style="dim red")
+                    label.append(" (not found)", style="dim")
+                    node = deps_node.add(label, data=None)
+                    node.allow_expand = False
+
+        # Find dependents (tickets that depend on this one)
+        dependents = []
+        for tid, ticket in tickets.items():
+            if zoomed_ticket in ticket.get("deps", []):
+                dependents.append(tid)
+
+        if dependents:
+            dependents_node = main_node.add(
+                Text("Dependents (blocked by this)", style="blue"),
+                data=None,
+            )
+            dependents_node.expand()
+            for dep_id in sorted(dependents):
+                dep_t = tickets[dep_id]
+                dep_title = dep_t.get("title", dep_id)
+                dep_status = dep_t.get("status", "")
+                dep_deps = dep_t.get("deps", [])
+
+                dep_style = "dim" if dep_status != "open" else ""
+                label = Text()
+                label.append(dep_id, style=f"cyan {dep_style}".strip())
+                label.append(f" {dep_title}", style=dep_style)
+                label.append(f" [{dep_status}]", style="dim")
+
+                dep_data = TicketData(
+                    id=dep_id,
+                    title=dep_title,
+                    status=dep_status,
+                    deps=dep_deps,
+                    wave=0,
+                )
+                node = dependents_node.add(label, data=dep_data)
+                node.allow_expand = False
+
+        # Expand root
+        self.root.expand()
+
+    def _show_wave_view(self, tickets: dict[str, dict[str, Any]]) -> None:
+        """Show the normal wave-based ticket view.
+
+        Args:
+            tickets: All tickets data.
+        """
+        # Reset root label
+        self.root.set_label("Tickets")
 
         # Compute waves
         waves = compute_waves(tickets)
@@ -305,9 +442,10 @@ class CrewApp(App):
     """A Textual app for managing crew agents."""
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
+        Binding("q", "quit_or_unzoom", "Quit/Unzoom"),
         Binding("r", "refresh", "Refresh"),
         Binding("t", "toggle_view", "Toggle View"),
+        Binding("enter", "zoom_in", "Zoom In", show=False),
     ]
 
     CSS = """
@@ -322,6 +460,7 @@ class CrewApp(App):
     def __init__(self):
         super().__init__()
         self._show_agents = True  # Start with agents view
+        self._zoomed_ticket: str | None = None  # Ticket ID when zoomed
 
     def compose(self) -> ComposeResult:
         """Compose the app layout."""
@@ -378,7 +517,37 @@ class CrewApp(App):
         else:
             table.display = False
             tree.display = True
-            tree.refresh_tickets()
+            tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
+
+    def action_zoom_in(self) -> None:
+        """Zoom into the selected ticket to show its dependency tree."""
+        if self._show_agents:
+            return  # Only works in ticket view
+
+        tree = self.query_one("#ticket-tree", TicketTree)
+        cursor_node = tree.cursor_node
+        if cursor_node is None:
+            return
+
+        # Get the ticket data from the selected node
+        ticket_data = cursor_node.data
+        if ticket_data is None:
+            return  # Category node selected, not a ticket
+
+        # Zoom into this ticket
+        self._zoomed_ticket = ticket_data.id
+        tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
+
+    def action_quit_or_unzoom(self) -> None:
+        """Unzoom if zoomed, otherwise quit."""
+        if self._zoomed_ticket is not None:
+            # Unzoom
+            self._zoomed_ticket = None
+            tree = self.query_one("#ticket-tree", TicketTree)
+            tree.refresh_tickets(zoomed_ticket=None)
+        else:
+            # Quit
+            self.exit()
 
 
 def main():
