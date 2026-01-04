@@ -1,6 +1,6 @@
 ---
 id: c-1acb
-status: open
+status: closed
 deps: [c-2efe, c-64b7]
 created: 2026-01-04T18:14:34Z
 type: task
