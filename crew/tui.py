@@ -15,10 +15,11 @@ from typing import Any, TYPE_CHECKING
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Center, Middle
-from textual.widgets import DataTable, Header, Footer, Tree, Static
+from textual.containers import Horizontal, Vertical, Center, Middle
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, Header, Footer, Tree, Static, Button, Label
 
-from crew.state import load_state
+from crew.state import load_state, save_state
 
 if TYPE_CHECKING:
     from crew.cli import BackgroundRunner
@@ -520,6 +521,82 @@ class HelpOverlay(Static):
         return text
 
 
+class MergeConfirmScreen(ModalScreen[bool]):
+    """Modal screen for confirming agent merge."""
+
+    BINDINGS = [
+        Binding("y", "confirm", "Yes"),
+        Binding("n", "cancel", "No"),
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    DEFAULT_CSS = """
+    MergeConfirmScreen {
+        align: center middle;
+    }
+
+    MergeConfirmScreen > Vertical {
+        width: 60;
+        height: auto;
+        background: $surface;
+        border: thick $primary;
+        padding: 1 2;
+    }
+
+    MergeConfirmScreen > Vertical > Label {
+        width: 100%;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    MergeConfirmScreen > Vertical > Horizontal {
+        width: 100%;
+        height: auto;
+        align: center middle;
+    }
+
+    MergeConfirmScreen > Vertical > Horizontal > Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, agent_name: str, task_id: str | None = None) -> None:
+        """Initialize the confirmation screen.
+
+        Args:
+            agent_name: Name of the agent to merge.
+            task_id: Optional task ID the agent was working on.
+        """
+        super().__init__()
+        self.agent_name = agent_name
+        self.task_id = task_id
+
+    def compose(self) -> ComposeResult:
+        """Compose the confirmation dialog."""
+        task_info = f" ({self.task_id})" if self.task_id else ""
+        with Vertical():
+            yield Label(f"Merge agent [bold]{self.agent_name}[/bold]{task_info}?")
+            yield Label("This will merge the agent's branch to main and remove the worktree.")
+            with Horizontal():
+                yield Button("Yes (y)", variant="primary", id="yes")
+                yield Button("No (n)", variant="default", id="no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button press."""
+        if event.button.id == "yes":
+            self.dismiss(True)
+        else:
+            self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        """Confirm the merge."""
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """Cancel the merge."""
+        self.dismiss(False)
+
+
 class CrewApp(App):
     """A Textual app for managing crew agents."""
 
@@ -529,6 +606,7 @@ class CrewApp(App):
         Binding("s", "stop_runner", "Stop"),
         Binding("R", "refresh", "Refresh"),
         Binding("t", "toggle_view", "Toggle View"),
+        Binding("m", "merge_agent", "Merge"),
         Binding("enter", "zoom_in", "Zoom In", show=False),
         Binding("question_mark", "toggle_help", "Help"),
     ]
@@ -557,16 +635,22 @@ class CrewApp(App):
     }
     """
 
-    def __init__(self, runner: BackgroundRunner | None = None) -> None:
+    def __init__(
+        self,
+        runner: BackgroundRunner | None = None,
+        project_root: Path | None = None,
+    ) -> None:
         """Initialize the app.
 
         Args:
             runner: Optional BackgroundRunner instance to poll for events.
+            project_root: Project root path for merge operations.
         """
         super().__init__()
         self._show_agents = True  # Start with agents view
         self._zoomed_ticket: str | None = None  # Ticket ID when zoomed
         self._runner = runner
+        self._project_root = project_root or Path.cwd()
         self._poll_timer = None
         self._help_visible = False
 
@@ -750,6 +834,80 @@ class CrewApp(App):
         else:
             container.remove_class("visible")
 
+    def action_merge_agent(self) -> None:
+        """Merge the selected agent's branch to main."""
+        if not self._show_agents:
+            return  # Only works in agents view
+
+        table = self.query_one("#agents", DataTable)
+        cursor_row = table.cursor_row
+
+        # Get the agent name from the selected row
+        if cursor_row is None or cursor_row < 0:
+            return
+
+        state = load_state(self._project_root)
+        agents_list = list(state.agents.values())
+
+        if cursor_row >= len(agents_list):
+            return
+
+        agent = agents_list[cursor_row]
+
+        # Only allow merging agents that are done or have work to merge
+        if agent.status not in ("done", "working", "ready"):
+            event_log = self.query_one("#event-log", EventLog)
+            event_log.add_event(f"[yellow]![/yellow] Cannot merge {agent.name}: status is {agent.status}")
+            return
+
+        if not agent.branch:
+            event_log = self.query_one("#event-log", EventLog)
+            event_log.add_event(f"[yellow]![/yellow] Cannot merge {agent.name}: no branch")
+            return
+
+        # Show confirmation dialog
+        self.push_screen(
+            MergeConfirmScreen(agent.name, agent.task),
+            self._on_merge_confirm,
+        )
+
+    def _on_merge_confirm(self, confirmed: bool) -> None:
+        """Handle merge confirmation result.
+
+        Args:
+            confirmed: True if user confirmed the merge.
+        """
+        if not confirmed:
+            return
+
+        # Get the selected agent again (state may have changed)
+        table = self.query_one("#agents", DataTable)
+        cursor_row = table.cursor_row
+
+        if cursor_row is None or cursor_row < 0:
+            return
+
+        state = load_state(self._project_root)
+        agents_list = list(state.agents.values())
+
+        if cursor_row >= len(agents_list):
+            return
+
+        agent = agents_list[cursor_row]
+        event_log = self.query_one("#event-log", EventLog)
+
+        # Perform the merge
+        try:
+            from crew.runner import cleanup_agent
+            cleanup_agent(agent, state, merge=True, project_root=self._project_root)
+            event_log.add_event(f"[green]✓[/green] Merged {agent.name} ({agent.branch})")
+            # Refresh views
+            self._refresh_agents(table)
+            tree = self.query_one("#ticket-tree", TicketTree)
+            tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
+        except Exception as e:
+            event_log.add_event(f"[red]✗[/red] Merge failed for {agent.name}: {e}")
+
     def action_quit_or_unzoom(self) -> None:
         """Unzoom if zoomed, otherwise quit."""
         if self._help_visible:
@@ -765,13 +923,17 @@ class CrewApp(App):
             self.exit()
 
 
-def main(runner: BackgroundRunner | None = None):
+def main(
+    runner: BackgroundRunner | None = None,
+    project_root: Path | None = None,
+):
     """Run the TUI application.
 
     Args:
         runner: Optional BackgroundRunner instance for live event updates.
+        project_root: Project root path for merge operations.
     """
-    app = CrewApp(runner=runner)
+    app = CrewApp(runner=runner, project_root=project_root)
     app.run()
 
 
