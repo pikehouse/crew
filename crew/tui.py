@@ -21,6 +21,8 @@ from textual.widgets import DataTable, Header, Footer, Tree, Static, Button, Lab
 
 from crew.runner import shutdown_agent, find_claude_process
 from crew.state import load_state, save_state
+from crew.git import run_git, GitError
+from crew.crew_logging import read_log_tail
 
 if TYPE_CHECKING:
     from crew.cli import BackgroundRunner
@@ -481,6 +483,137 @@ class EventLog(Static):
             self.update("[dim]No recent events[/dim]")
 
 
+class AgentDetailPanel(Static):
+    """A panel showing git status, diff stat, and log tail for the selected agent."""
+
+    DEFAULT_CSS = """
+    AgentDetailPanel {
+        width: 100%;
+        height: 100%;
+        border-left: solid $primary;
+        padding: 0 1;
+        background: $surface;
+        overflow-y: auto;
+    }
+    """
+
+    def __init__(self, project_root: Path | None = None, **kwargs) -> None:
+        """Initialize the agent detail panel.
+
+        Args:
+            project_root: Project root path for git and log operations.
+        """
+        super().__init__(**kwargs)
+        self._project_root = project_root or Path.cwd()
+        self._current_agent: str | None = None
+
+    def update_agent(self, agent_name: str | None, worktree: Path | None) -> None:
+        """Update the panel to show details for the given agent.
+
+        Args:
+            agent_name: Name of the agent to display, or None to clear.
+            worktree: Path to the agent's worktree.
+        """
+        self._current_agent = agent_name
+
+        if not agent_name or not worktree:
+            self.update(Text("[dim]No agent selected[/dim]"))
+            return
+
+        # Build the detail content
+        content = Text()
+
+        # Header
+        content.append(f"Agent: {agent_name}\n", style="bold cyan")
+        content.append("\n")
+
+        # Git status section
+        content.append("Git Status\n", style="bold underline")
+        try:
+            status = run_git("status", "--short", cwd=worktree)
+            if status:
+                for line in status.split("\n")[:10]:  # Limit to 10 lines
+                    # Color code by status
+                    if line.startswith("M"):
+                        content.append(line + "\n", style="yellow")
+                    elif line.startswith("A"):
+                        content.append(line + "\n", style="green")
+                    elif line.startswith("D"):
+                        content.append(line + "\n", style="red")
+                    elif line.startswith("??"):
+                        content.append(line + "\n", style="dim")
+                    else:
+                        content.append(line + "\n")
+            else:
+                content.append("[dim]No changes[/dim]\n")
+        except GitError as e:
+            content.append(f"[red]Error: {e}[/red]\n")
+        content.append("\n")
+
+        # Diff stat section
+        content.append("Diff Stat\n", style="bold underline")
+        try:
+            diff_stat = run_git("diff", "--stat", "HEAD", cwd=worktree)
+            if diff_stat:
+                lines = diff_stat.split("\n")
+                # Show file changes (limit to 8 lines)
+                for line in lines[:8]:
+                    if "|" in line:
+                        # File change line - color insertions green, deletions red
+                        parts = line.split("|")
+                        if len(parts) == 2:
+                            content.append(parts[0] + "|")
+                            stat_part = parts[1]
+                            # Color the +/- indicators
+                            colored_stat = ""
+                            for char in stat_part:
+                                if char == "+":
+                                    content.append("+", style="green")
+                                elif char == "-":
+                                    content.append("-", style="red")
+                                else:
+                                    content.append(char)
+                            content.append("\n")
+                        else:
+                            content.append(line + "\n")
+                    else:
+                        content.append(line + "\n")
+                # Show summary if present
+                if lines and ("insertion" in lines[-1] or "deletion" in lines[-1]):
+                    summary = lines[-1]
+                    content.append(summary + "\n", style="bold")
+            else:
+                content.append("[dim]No uncommitted changes[/dim]\n")
+        except GitError as e:
+            content.append(f"[red]Error: {e}[/red]\n")
+        content.append("\n")
+
+        # Log tail section
+        content.append("Recent Output\n", style="bold underline")
+        log_content = read_log_tail(agent_name, lines=15, project_root=self._project_root)
+        if log_content:
+            # Truncate long lines and limit content
+            log_lines = log_content.split("\n")
+            for line in log_lines[-15:]:
+                # Truncate long lines
+                if len(line) > 80:
+                    line = line[:77] + "..."
+                content.append(line + "\n", style="dim")
+        else:
+            content.append("[dim]No logs available[/dim]\n")
+
+        self.update(content)
+
+    def refresh_current(self) -> None:
+        """Refresh the display for the current agent."""
+        if self._current_agent:
+            # Need to get the worktree from state
+            state = load_state(self._project_root)
+            agent = state.agents.get(self._current_agent)
+            if agent:
+                self.update_agent(agent.name, agent.worktree)
+
+
 class HelpOverlay(Static):
     """A modal overlay showing all keybindings."""
 
@@ -706,9 +839,22 @@ class CrewApp(App):
         height: 100%;
         border-right: solid $primary;
     }
-    #agents {
+    #right-panel {
         width: 60%;
         height: 100%;
+    }
+    #agents-container {
+        height: 50%;
+        width: 100%;
+    }
+    #agents {
+        width: 100%;
+        height: 100%;
+    }
+    #agent-detail {
+        height: 50%;
+        width: 100%;
+        border-top: solid $primary;
     }
     #help-overlay-container {
         width: 100%;
@@ -745,7 +891,10 @@ class CrewApp(App):
         yield Header()
         with Horizontal(id="main-container"):
             yield TicketTree(id="ticket-tree")
-            yield DataTable(id="agents")
+            with Vertical(id="right-panel"):
+                with Vertical(id="agents-container"):
+                    yield DataTable(id="agents")
+                yield AgentDetailPanel(project_root=self._project_root, id="agent-detail")
         yield EventLog(id="event-log")
         yield Footer()
         # Help overlay (hidden by default)
@@ -778,6 +927,33 @@ class CrewApp(App):
         # Start polling for runner events if runner is provided
         if self._runner:
             self._poll_timer = self.set_interval(0.5, self._poll_runner_events)
+
+        # Update detail panel with first agent if any exist
+        self._update_detail_panel_for_current_selection()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Handle when a row is highlighted (cursor moved) in the DataTable."""
+        self._update_detail_panel_for_current_selection()
+
+    def _update_detail_panel_for_current_selection(self) -> None:
+        """Update the agent detail panel based on current table selection."""
+        table = self.query_one("#agents", DataTable)
+        detail_panel = self.query_one("#agent-detail", AgentDetailPanel)
+
+        cursor_row = table.cursor_row
+        if cursor_row is None or cursor_row < 0:
+            detail_panel.update_agent(None, None)
+            return
+
+        state = load_state(self._project_root)
+        agents_list = list(state.agents.values())
+
+        if cursor_row >= len(agents_list):
+            detail_panel.update_agent(None, None)
+            return
+
+        agent = agents_list[cursor_row]
+        detail_panel.update_agent(agent.name, agent.worktree)
 
     def _poll_runner_events(self) -> None:
         """Poll for events from BackgroundRunner and update UI."""
@@ -819,6 +995,8 @@ class CrewApp(App):
         if needs_refresh:
             table = self.query_one("#agents", DataTable)
             self._refresh_agents(table)
+            # Also refresh the agent detail panel
+            self._update_detail_panel_for_current_selection()
             # Also refresh tickets on done/merged since task might be closed
             if any(e.type in ("done", "merged") for e in events):
                 tree = self.query_one("#ticket-tree", TicketTree)
@@ -848,10 +1026,11 @@ class CrewApp(App):
             )
 
     def action_refresh(self) -> None:
-        """Refresh both views."""
+        """Refresh all views."""
         table = self.query_one("#agents", DataTable)
         tree = self.query_one("#ticket-tree", TicketTree)
         self._refresh_agents(table)
+        self._update_detail_panel_for_current_selection()
         tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
 
     def action_run_runner(self) -> None:
@@ -891,15 +1070,15 @@ class CrewApp(App):
 
     def action_toggle_view(self) -> None:
         """Toggle between agents and tickets view."""
-        table = self.query_one("#agents", DataTable)
+        right_panel = self.query_one("#right-panel", Vertical)
         tree = self.query_one("#ticket-tree", TicketTree)
         self._show_agents = not self._show_agents
 
         if self._show_agents:
-            table.display = True
+            right_panel.display = True
             tree.display = False
         else:
-            table.display = False
+            right_panel.display = False
             tree.display = True
             tree.refresh_tickets(zoomed_ticket=self._zoomed_ticket)
 
