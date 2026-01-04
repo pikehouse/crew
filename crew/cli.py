@@ -1803,7 +1803,7 @@ def recover_session(state, project_root: Path) -> bool:
                         task_id = agent.task
                         branch = agent.branch
                         try:
-                            complete_task(agent, state, project_root)
+                            complete_task(agent, state, project_root, console=console)
                             actions_taken.append(f"Completed {agent.name} (merged {branch}, closed {task_id})")
                         except Exception as e:
                             actions_taken.append(f"Failed to complete {agent.name}: {e}")
@@ -1842,7 +1842,7 @@ def recover_session(state, project_root: Path) -> bool:
                 task_id = agent.task
                 branch = agent.branch
                 try:
-                    complete_task(agent, state, project_root)
+                    complete_task(agent, state, project_root, console=console)
                     actions_taken.append(f"Completed {agent.name} (merged {branch}, closed {task_id})")
                 except Exception as e:
                     actions_taken.append(f"Failed to complete {agent.name}: {e}")
