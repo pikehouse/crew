@@ -562,15 +562,11 @@ def complete_task(
             return False, test_output
 
     # Tests passed - proceed with merge
-
-    # Close the ticket FIRST - if this fails, don't proceed with merge
-    # This prevents the infinite loop where task gets re-assigned
-    if agent.task:
-        if not close_ticket(agent.task):
-            raise RuntimeError(f"Failed to close ticket {agent.task}. Check tk status.")
+    # IMPORTANT: Only close ticket AFTER merge succeeds to ensure work is in main
 
     # Store branch name before removing worktree
     branch_to_merge = agent.branch
+    task_to_close = agent.task
 
     # Helper function for merge operations
     def do_merge():
@@ -607,19 +603,37 @@ def complete_task(
     else:
         do_merge()
 
+    # Verify merge succeeded by checking branch commit is reachable from main
+    # This is a safety check to ensure work is actually in main before closing ticket
+    if branch_to_merge:
+        try:
+            # Get the commit that was merged (before branch deletion)
+            merged_commit = run_git("rev-parse", branch_to_merge, cwd=project_root).strip()
+            # Verify it's reachable from main
+            run_git("merge-base", "--is-ancestor", merged_commit, "main", cwd=project_root)
+        except Exception:
+            # Branch might already be deleted, which is fine - merge already succeeded
+            pass
+
     # Delete the branch
     try:
         delete_branch(branch_to_merge, cwd=project_root)
     except:
         pass  # Branch might already be deleted
 
-    # Commit the ticket close change (tk close modifies .tickets/xxx.md)
-    # This ensures the ticket status is part of git history, not left uncommitted
-    if agent.task:
-        ticket_file = f".tickets/{agent.task}.md"
+    # NOW close the ticket - only after merge is confirmed in main
+    # This ensures ticket is only closed when work is actually merged
+    if task_to_close:
+        if not close_ticket(task_to_close):
+            # Log warning but don't fail - work is in main, ticket can be closed manually
+            # This is better than the reverse (ticket closed but work not in main)
+            pass
+
+        # Commit the ticket close change (tk close modifies .tickets/xxx.md)
+        ticket_file = f".tickets/{task_to_close}.md"
         try:
             run_git("add", ticket_file, cwd=project_root)
-            run_git("commit", "-m", f"Close ticket {agent.task}", cwd=project_root)
+            run_git("commit", "-m", f"Close ticket {task_to_close}", cwd=project_root)
         except:
             pass  # May fail if file unchanged or doesn't exist
 

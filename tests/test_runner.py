@@ -1027,6 +1027,233 @@ class TestCompleteTask:
             assert output == test_failure_output
 
 
+class TestTicketSafety:
+    """Critical tests for ticket safety - ensures tickets are only closed when work is in main.
+
+    The key invariant: A ticket should NEVER be closed unless the work is confirmed
+    to be merged into main. This prevents the dangerous state where a ticket is
+    closed but the work isn't actually in the codebase.
+    """
+
+    def test_ticket_not_closed_when_merge_fails(self, project_root: Path):
+        """CRITICAL: Ticket must NOT be closed if merge fails."""
+        state = State()
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=project_root / "agents" / "test-worktree",
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.runner.run_tests_in_worktree", return_value=(True, "OK")), \
+             patch("crew.runner.close_ticket") as mock_close, \
+             patch("crew.runner.remove_worktree"), \
+             patch("crew.runner.run_git"), \
+             patch("crew.runner.merge_branch") as mock_merge, \
+             patch("crew.runner.resolve_merge_conflicts", return_value=False):
+
+            # Simulate merge failure
+            mock_merge.side_effect = Exception("Merge conflict")
+
+            with pytest.raises(RuntimeError):
+                complete_task(agent, state, project_root=project_root)
+
+            # CRITICAL: close_ticket should NOT have been called
+            mock_close.assert_not_called()
+
+    def test_ticket_closed_only_after_successful_merge(self, project_root: Path):
+        """CRITICAL: Ticket must only be closed AFTER merge succeeds."""
+        state = State()
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=project_root / "agents" / "test-worktree",
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        call_order = []
+
+        def track_merge(*args, **kwargs):
+            call_order.append("merge")
+
+        def track_close(*args, **kwargs):
+            call_order.append("close_ticket")
+            return True
+
+        with patch("crew.runner.run_tests_in_worktree", return_value=(True, "OK")), \
+             patch("crew.runner.close_ticket", side_effect=track_close), \
+             patch("crew.runner.remove_worktree"), \
+             patch("crew.runner.run_git"), \
+             patch("crew.runner.merge_branch", side_effect=track_merge), \
+             patch("crew.runner.delete_branch"):
+
+            complete_task(agent, state, project_root=project_root)
+
+            # CRITICAL: merge must happen BEFORE close_ticket
+            assert "merge" in call_order
+            assert "close_ticket" in call_order
+            merge_idx = call_order.index("merge")
+            close_idx = call_order.index("close_ticket")
+            assert merge_idx < close_idx, "Merge must happen before closing ticket"
+
+    def test_work_in_main_even_if_ticket_close_fails(self, project_root: Path):
+        """If merge succeeds but ticket close fails, work should still be in main.
+
+        This is the "safer" failure mode - work is in main but ticket not closed.
+        This can be fixed manually, unlike the reverse (ticket closed, work lost).
+        """
+        state = State()
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=project_root / "agents" / "test-worktree",
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        merge_called = []
+
+        def track_merge(*args, **kwargs):
+            merge_called.append(True)
+
+        with patch("crew.runner.run_tests_in_worktree", return_value=(True, "OK")), \
+             patch("crew.runner.close_ticket", return_value=False), \
+             patch("crew.runner.remove_worktree"), \
+             patch("crew.runner.run_git"), \
+             patch("crew.runner.merge_branch", side_effect=track_merge), \
+             patch("crew.runner.delete_branch"):
+
+            # Should NOT raise even if close_ticket fails
+            success, output = complete_task(agent, state, project_root=project_root)
+
+            # Merge should have been called (work is in main)
+            assert merge_called, "Merge should have been called"
+            # Task should still complete successfully
+            assert success is True
+
+    def test_ticket_not_closed_on_test_failure(self, project_root: Path):
+        """Ticket must NOT be closed when tests fail."""
+        state = State()
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=project_root / "agents" / "test-worktree",
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.runner.run_tests_in_worktree", return_value=(False, "Tests failed")), \
+             patch("crew.runner.close_ticket") as mock_close, \
+             patch("crew.runner.merge_branch") as mock_merge:
+
+            complete_task(agent, state, project_root=project_root)
+
+            # Neither merge nor close should happen on test failure
+            mock_merge.assert_not_called()
+            mock_close.assert_not_called()
+
+    def test_complete_task_operation_order(self, project_root: Path):
+        """Verify the complete operation order is safe.
+
+        Expected order:
+        1. Run tests
+        2. Remove worktree
+        3. Merge branch
+        4. Delete branch
+        5. Close ticket (only after merge confirmed)
+        6. Reset agent
+        """
+        state = State()
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=project_root / "agents" / "test-worktree",
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        call_order = []
+
+        def make_tracker(name, return_value=None):
+            def tracker(*args, **kwargs):
+                call_order.append(name)
+                return return_value
+            return tracker
+
+        with patch("crew.runner.run_tests_in_worktree", side_effect=make_tracker("tests", (True, "OK"))), \
+             patch("crew.runner.close_ticket", side_effect=make_tracker("close_ticket", True)), \
+             patch("crew.runner.remove_worktree", side_effect=make_tracker("remove_worktree")), \
+             patch("crew.runner.run_git", side_effect=make_tracker("run_git")), \
+             patch("crew.runner.merge_branch", side_effect=make_tracker("merge")), \
+             patch("crew.runner.delete_branch", side_effect=make_tracker("delete_branch")):
+
+            complete_task(agent, state, project_root=project_root)
+
+            # Verify critical ordering
+            assert "tests" in call_order, "Tests should be run"
+            assert "merge" in call_order, "Merge should happen"
+            assert "close_ticket" in call_order, "Ticket should be closed"
+
+            tests_idx = call_order.index("tests")
+            merge_idx = call_order.index("merge")
+            close_idx = call_order.index("close_ticket")
+
+            assert tests_idx < merge_idx, "Tests must run before merge"
+            assert merge_idx < close_idx, "Merge must complete before ticket is closed"
+
+    def test_agent_not_reset_if_merge_fails(self, project_root: Path):
+        """Agent should remain in 'done' state if merge fails, for manual recovery."""
+        state = State()
+        agent = Agent(
+            name="test-agent",
+            session="session-123",
+            worktree=project_root / "agents" / "test-worktree",
+            branch="agent/test-branch",
+            task="c-100",
+            status="done",
+            started_at=datetime.now(),
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        with patch("crew.runner.run_tests_in_worktree", return_value=(True, "OK")), \
+             patch("crew.runner.remove_worktree"), \
+             patch("crew.runner.run_git"), \
+             patch("crew.runner.merge_branch") as mock_merge, \
+             patch("crew.runner.resolve_merge_conflicts", return_value=False):
+
+            mock_merge.side_effect = Exception("Merge conflict")
+
+            with pytest.raises(RuntimeError):
+                complete_task(agent, state, project_root=project_root)
+
+            # Agent should NOT be reset to idle - keep in done for manual recovery
+            assert agent.status == "done"
+            assert agent.task == "c-100"  # Task should still be assigned
+
+
 class TestTokenAccumulation:
     """Tests specifically for token accumulation functionality."""
 
