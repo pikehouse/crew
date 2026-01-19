@@ -765,21 +765,32 @@ def cleanup_agent(
     """
     project_root = project_root or Path.cwd()
 
-    if merge:
+    if merge and agent.branch:
         # Switch to main and merge
         run_git("checkout", "main", cwd=project_root)
-        try:
-            merge_branch(
-                agent.branch,
-                message=format_crew_merge_message(agent),
-                cwd=project_root,
-            )
-            delete_branch(agent.branch, cwd=project_root)
-        except Exception as e:
-            raise RuntimeError(f"Merge failed: {e}. Resolve conflicts manually.")
 
-    # Remove worktree
-    remove_worktree(agent.worktree)
+        # Check if branch exists before trying to merge
+        try:
+            run_git("rev-parse", "--verify", agent.branch, cwd=project_root)
+            branch_exists = True
+        except Exception:
+            branch_exists = False
+
+        if branch_exists:
+            try:
+                merge_branch(
+                    agent.branch,
+                    message=format_crew_merge_message(agent),
+                    cwd=project_root,
+                )
+                delete_branch(agent.branch, cwd=project_root)
+            except Exception as e:
+                raise RuntimeError(f"Merge failed: {e}. Resolve conflicts manually.")
+        # If branch doesn't exist, it was likely already merged - just proceed to cleanup
+
+    # Remove worktree (if it exists)
+    if agent.worktree:
+        remove_worktree(agent.worktree)
 
     # Remove from state
     state.remove_agent(agent.name)
