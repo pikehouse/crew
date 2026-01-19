@@ -109,6 +109,31 @@ class BackgroundRunner:
         """Get set of task IDs already assigned to agents."""
         return {a.task for a in self.state.agents.values() if a.task}
 
+    def _recover_done_agents(self):
+        """Recover agents stuck in 'done' state with missing worktrees.
+
+        This handles the case where complete_task partially completed
+        (worktree removed, branch merged) but crashed before resetting
+        agent to idle.
+        """
+        from pathlib import Path
+        from crew.state import save_state
+
+        for agent in list(self.state.agents.values()):
+            if agent.status == "done" and agent.worktree:
+                # Check if worktree still exists
+                if not Path(agent.worktree).exists():
+                    # Worktree was removed but agent wasn't reset - complete the recovery
+                    self.events.put(RunnerEvent("info", agent.name, "Recovering orphaned done agent"))
+                    agent.session = ""
+                    agent.worktree = None
+                    agent.branch = ""
+                    agent.task = None
+                    agent.status = "idle"
+                    agent.step_count = 0
+                    agent.last_step_at = None
+                    save_state(self.state, self.project_root)
+
     def _assign_work(self):
         """Poll for ready tasks and assign to idle agents."""
         idle_agents = self._get_idle_agents()
@@ -182,6 +207,10 @@ class BackgroundRunner:
         self._executor = ThreadPoolExecutor(max_workers=10)
         try:
             while self.running:
+                # Recover any agents stuck in "done" with missing worktrees
+                # (happens if complete_task partially completed but crashed)
+                self._recover_done_agents()
+
                 # First, try to assign work to idle agents
                 self._assign_work()
 
