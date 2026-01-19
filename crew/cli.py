@@ -733,9 +733,17 @@ def cmd_peek(state, args: list[str], project_root: Path) -> None:
 
 
 def cmd_ps(state, args: list[str]) -> None:
-    """Show all running claude processes."""
+    """Show all running claude processes.
+
+    Usage:
+        ps          - Show summary (agent name, task) for each process
+        ps -v       - Show verbose output with full command line
+    """
     import subprocess as sp
     from rich.table import Table
+
+    # Parse arguments
+    verbose = "-v" in args or "--verbose" in args
 
     try:
         # Get all claude processes with full command line (-ww for wide output)
@@ -745,33 +753,68 @@ def cmd_ps(state, args: list[str]) -> None:
             text=True,
         )
 
-        lines = []
+        processes = []
         for line in result.stdout.strip().split("\n")[1:]:  # Skip header
             lower = line.lower()
             # Match claude processes, but filter out shell wrappers and grep
             if "claude" in lower and "grep" not in lower and "/bin/zsh -c" not in lower:
-                lines.append(line.strip())
+                parts = line.strip().split(None, 2)
+                if len(parts) >= 3:
+                    processes.append({
+                        "pid": parts[0],
+                        "etime": parts[1],
+                        "cmd": parts[2],
+                    })
 
-        if not lines:
+        if not processes:
             print_info("No claude processes running")
             return
+
+        # Try to match processes to agents
+        for proc in processes:
+            proc["agent"] = None
+            proc["task"] = None
+            cmd = proc["cmd"]
+
+            # Look for session ID or worktree path in command
+            for agent in state.agents.values():
+                # Match by session ID
+                if agent.session and agent.session in cmd:
+                    proc["agent"] = agent.name
+                    proc["task"] = agent.task
+                    break
+                # Match by worktree path
+                if agent.worktree and str(agent.worktree) in cmd:
+                    proc["agent"] = agent.name
+                    proc["task"] = agent.task
+                    break
 
         table = Table(title="Running Claude Processes", show_header=True, header_style="bold")
         table.add_column("PID", style="cyan", width=8)
         table.add_column("Time", width=10)
-        table.add_column("Command", style="dim")
+        table.add_column("Agent", style="green", width=8)
+        table.add_column("Task", style="yellow")
 
-        for line in lines:
-            parts = line.split(None, 2)
-            if len(parts) >= 3:
-                pid, etime, cmd = parts[0], parts[1], parts[2]
-                # Truncate long commands
-                if len(cmd) > 80:
-                    cmd = cmd[:77] + "..."
-                table.add_row(pid, etime, cmd)
+        if verbose:
+            table.add_column("Command", style="dim")
+
+        for proc in processes:
+            agent_name = proc["agent"] or "[dim]-[/dim]"
+            task = proc["task"] or "[dim]unknown[/dim]"
+            # Truncate long tasks
+            if len(task) > 50:
+                task = task[:47] + "..."
+
+            if verbose:
+                cmd = proc["cmd"]
+                if len(cmd) > 60:
+                    cmd = cmd[:57] + "..."
+                table.add_row(proc["pid"], proc["etime"], agent_name, task, cmd)
+            else:
+                table.add_row(proc["pid"], proc["etime"], agent_name, task)
 
         console.print(table)
-        console.print(f"\n[dim]{len(lines)} process(es)[/dim]")
+        console.print(f"\n[dim]{len(processes)} process(es)[/dim]")
 
     except Exception as e:
         print_error(f"Failed to get processes: {e}")
