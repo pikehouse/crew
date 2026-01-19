@@ -709,16 +709,18 @@ def cmd_ps(state, args: list[str]) -> None:
     from rich.table import Table
 
     try:
-        # Get all claude processes with full command line
+        # Get all claude processes with full command line (-ww for wide output)
         result = sp.run(
-            ["ps", "-eo", "pid,etime,command"],
+            ["ps", "-eww", "-o", "pid,etime,command"],
             capture_output=True,
             text=True,
         )
 
         lines = []
         for line in result.stdout.strip().split("\n")[1:]:  # Skip header
-            if "claude" in line.lower() and "--print" in line:
+            lower = line.lower()
+            # Match claude processes, but filter out shell wrappers and grep
+            if "claude" in lower and "grep" not in lower and "/bin/zsh -c" not in lower:
                 lines.append(line.strip())
 
         if not lines:

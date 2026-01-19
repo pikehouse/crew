@@ -791,17 +791,15 @@ def find_claude_process(agent: Agent) -> int | None:
         Process ID if found, None otherwise.
     """
     try:
-        # Get all running processes with full command line
+        # Get all running processes with full command line (-eww for wide output)
         result = subprocess.run(
-            ["ps", "-eo", "pid,command"],
+            ["ps", "-eww", "-o", "pid,command"],
             capture_output=True,
             text=True,
         )
 
         for line in result.stdout.strip().split("\n")[1:]:  # Skip header
             if "claude" not in line.lower():
-                continue
-            if "--print" not in line:
                 continue
 
             parts = line.strip().split(None, 1)
