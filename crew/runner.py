@@ -695,9 +695,11 @@ def step_agent(
     if prompt is None:
         prompt = INIT_PROMPT if is_first_step else STEP_PROMPT
 
-    # Set status to working
+    # Set status to working and save immediately
+    # This ensures if interrupted during run_claude, state reflects we started stepping
     if agent.status in ("ready", "idle"):
         agent.status = "working"
+        save_state(state, project_root)
 
     # Run claude - first step creates session, subsequent resume it
     response = run_claude(
@@ -842,35 +844,53 @@ def kill_claude_process(agent: Agent) -> bool:
 
 
 def check_work_completed(agent: Agent, project_root: Path | None = None) -> str:
-    """Check if agent's work was completed by parsing logs.
+    """Check if agent's work was completed by parsing logs and worktree.
 
     Returns:
         "done" - DONE marker found in logs (work completed)
-        "partial" - Some steps taken but not completed
-        "nothing" - No work done (no logs or empty logs)
+        "partial" - Some steps taken or uncommitted changes exist
+        "nothing" - No work done (no logs, no changes)
     """
     project_root = project_root or Path.cwd()
 
     # Read the latest log
     log_content = read_latest_log(agent.name, project_root)
 
-    if not log_content:
-        return "nothing"
+    if log_content:
+        # Check if DONE is in the log output
+        # Extract the output section (between --- and === END ===)
+        parts = log_content.split("---\n", 1)
+        if len(parts) < 2:
+            output = log_content
+        else:
+            output = parts[1].rsplit("=== END ===", 1)[0]
 
-    # Check if DONE is in the log output
-    # Extract the output section (between --- and === END ===)
-    parts = log_content.split("---\n", 1)
-    if len(parts) < 2:
-        output = log_content
-    else:
-        output = parts[1].rsplit("=== END ===", 1)[0]
+        if is_done(output):
+            return "done"
 
-    if is_done(output):
-        return "done"
-
-    # If there's meaningful output, consider it partial work
+    # If there's meaningful output or steps taken, consider it partial work
     if agent.step_count > 0:
         return "partial"
+
+    # Check for uncommitted changes in worktree (handles interrupted steps)
+    if agent.worktree and Path(agent.worktree).exists():
+        try:
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=agent.worktree,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            # Filter out CLAUDE.md changes (always modified for task assignment)
+            changes = [
+                line for line in result.stdout.strip().split("\n")
+                if line and "CLAUDE.md" not in line
+            ]
+            if changes:
+                return "partial"
+        except Exception:
+            pass  # If git check fails, fall through to "nothing"
 
     return "nothing"
 
