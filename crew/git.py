@@ -28,12 +28,13 @@ def run_git(*args: str, cwd: Path | None = None) -> str:
         raise GitError(f"git {' '.join(args)} failed: {e.stderr.strip()}") from e
 
 
-def create_worktree(name: str, agents_dir: Path | None = None) -> Path:
+def create_worktree(name: str, agents_dir: Path | None = None, force_clean: bool = False) -> Path:
     """Create a git worktree for an agent.
 
     Args:
         name: Agent name (used for directory and branch)
         agents_dir: Directory to create worktrees in (default: ./agents)
+        force_clean: If True, remove existing worktree before creating
 
     Returns:
         Path to the created worktree
@@ -43,7 +44,11 @@ def create_worktree(name: str, agents_dir: Path | None = None) -> Path:
     branch_name = f"agent/{name}"
 
     if worktree_path.exists():
-        raise GitError(f"Worktree already exists: {worktree_path}")
+        if force_clean:
+            # Clean up stale worktree
+            remove_worktree(worktree_path)
+        else:
+            raise GitError(f"Worktree already exists: {worktree_path}")
 
     # Create worktree with new branch
     # Try to create with new branch first, fall back to existing branch

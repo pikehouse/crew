@@ -418,6 +418,18 @@ def assign_task(
     branch_name = f"agent/{agent.name}-{task_id}"
     worktree_name = f"{agent.name}-{task_id}"
 
+    # Check if worktree already exists but isn't assigned to any agent (stale)
+    potential_worktree = agents_dir / worktree_name
+    if potential_worktree.exists():
+        # Check if any agent is using this worktree
+        worktree_in_use = any(
+            a.worktree and Path(a.worktree) == potential_worktree
+            for a in state.agents.values()
+        )
+        if not worktree_in_use:
+            # Stale worktree - clean it up
+            remove_worktree(potential_worktree)
+
     # Create worktree
     worktree = create_worktree(worktree_name, agents_dir)
 
