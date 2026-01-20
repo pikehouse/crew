@@ -74,6 +74,7 @@ class BackgroundRunner:
             return False
         self.running = True
         self._stepping = set()
+        self._recently_completed = set()  # Clear on start to allow re-opened tasks
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
         return True
@@ -194,7 +195,16 @@ class BackgroundRunner:
                     break  # Don't loop forever on persistent errors
 
         except Exception as e:
-            self.events.put(RunnerEvent("error", agent.name, str(e)))
+            error_msg = str(e)
+            self.events.put(RunnerEvent("error", agent.name, error_msg))
+
+            # Regenerate session ID on timeout or session errors
+            # This prevents "Session ID already in use" errors on retry
+            if "timeout" in error_msg.lower() or "session" in error_msg.lower():
+                from crew.runner import generate_session_id
+                from crew.state import save_state
+                agent.session = generate_session_id()
+                save_state(self.state, self.project_root)
         finally:
             with self._lock:
                 self._stepping.discard(agent.name)
