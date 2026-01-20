@@ -762,12 +762,14 @@ def step_agent(
     # Check if done (but don't close ticket yet - that happens after merge)
     if is_done(result):
         agent.status = "done"
-        # Generate Haiku summary when agent completes
-        _refresh_agent_summary(agent, project_root)
 
     # Check if stuck (too many steps)
     if agent.step_count >= 20 and agent.status != "done":
         agent.status = "stuck"
+
+    # Generate Haiku summary after each step (for live dashboard updates)
+    # This runs for all agents, not just completed ones
+    _refresh_agent_summary(agent, project_root)
 
     # Save state
     save_state(state, project_root)
