@@ -1759,6 +1759,152 @@ def cmd_queue(state, args: list[str]) -> None:
     console.print(f"[dim]{total} open tickets: {ready} ready, {total - ready - blocked} pending, {blocked} blocked[/dim]")
 
 
+def cmd_tickets(state, args: list[str], project_root: Path) -> None:
+    """Show ticket activity: agents working on tickets and recently closed tickets.
+
+    Displays:
+    - Active: Agents currently working on tickets (with ticket titles)
+    - Recently Closed: Tickets merged/closed recently with commit info
+    """
+    import json
+    import re
+    from rich.table import Table
+    from rich.panel import Panel
+
+    # Get all tickets as JSON from tk query
+    tickets = {}
+    try:
+        result = subprocess.run(
+            ["tk", "query"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.strip().split("\n"):
+                if line.strip():
+                    try:
+                        ticket = json.loads(line)
+                        tid = ticket.get("id", "")
+                        if tid:
+                            tickets[tid] = ticket
+                    except json.JSONDecodeError:
+                        pass
+    except FileNotFoundError:
+        print_error("tk command not found. Is ticket installed?")
+        return
+
+    # Helper to get ticket title from file
+    def get_ticket_title(ticket_id: str) -> str:
+        ticket_file = project_root / ".tickets" / f"{ticket_id}.md"
+        if ticket_file.exists():
+            try:
+                content = ticket_file.read_text()
+                # Find first # heading after frontmatter
+                in_frontmatter = False
+                for line in content.split("\n"):
+                    if line.strip() == "---":
+                        in_frontmatter = not in_frontmatter
+                        continue
+                    if not in_frontmatter and line.startswith("# "):
+                        return line[2:].strip()
+            except Exception:
+                pass
+        return ticket_id
+
+    # Section 1: Active agents working on tickets
+    working_agents = [a for a in state.agents.values() if a.task and a.status in ("ready", "working", "idle")]
+
+    if working_agents:
+        console.print("[bold green]Active[/bold green]")
+        table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+        table.add_column("Agent", style="green")
+        table.add_column("Ticket", style="cyan")
+        table.add_column("Title")
+        table.add_column("Status", style="yellow")
+
+        for agent in sorted(working_agents, key=lambda a: a.name):
+            title = get_ticket_title(agent.task) if agent.task else ""
+            table.add_row(
+                agent.name,
+                agent.task or "",
+                title,
+                agent.status,
+            )
+        console.print(table)
+        console.print()
+    else:
+        console.print("[dim]No agents currently working on tickets.[/dim]")
+        console.print()
+
+    # Section 2: Recently closed tickets with merge info
+    # Parse git log for recent merge commits
+    limit = 10  # Show last 10 merged tickets
+    try:
+        git_result = subprocess.run(
+            ["git", "log", "--oneline", "-50"],
+            capture_output=True,
+            text=True,
+            cwd=project_root,
+        )
+        if git_result.returncode != 0:
+            print_warning("Could not read git log")
+            return
+    except FileNotFoundError:
+        print_error("git command not found")
+        return
+
+    # Find merge commits with ticket IDs
+    # Pattern: "ca5c243 Merge agent/d-c-c04b (c-c04b) - ticket details on Enter"
+    merge_pattern = re.compile(r"^([a-f0-9]+) Merge agent/([^\s]+) \(([^)]+)\)(.*)$")
+    recent_merges = []
+
+    for line in git_result.stdout.strip().split("\n"):
+        match = merge_pattern.match(line)
+        if match:
+            commit_hash = match.group(1)
+            branch = match.group(2)
+            ticket_id = match.group(3)
+            extra = match.group(4).strip()
+            # Remove leading dash if present
+            if extra.startswith("- "):
+                extra = extra[2:]
+            recent_merges.append({
+                "commit": commit_hash,
+                "branch": f"agent/{branch}",
+                "ticket": ticket_id,
+                "extra": extra,
+            })
+            if len(recent_merges) >= limit:
+                break
+
+    if recent_merges:
+        console.print("[bold blue]Recently Closed[/bold blue]")
+        table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+        table.add_column("Ticket", style="cyan")
+        table.add_column("Title")
+        table.add_column("Commit", style="dim")
+        table.add_column("Branch", style="dim")
+
+        for merge in recent_merges:
+            title = get_ticket_title(merge["ticket"])
+            # If there's extra info in commit message, use that as title hint
+            if merge["extra"] and not title.startswith(merge["ticket"]):
+                display_title = title
+            elif merge["extra"]:
+                display_title = merge["extra"]
+            else:
+                display_title = title
+            table.add_row(
+                merge["ticket"],
+                display_title,
+                merge["commit"],
+                merge["branch"],
+            )
+        console.print(table)
+    else:
+        console.print("[dim]No recently merged tickets found.[/dim]")
+
+
 def render_dashboard(state, project_root: Path, runner_active: bool = False, show_summaries: bool = False) -> "Group":
     """Render dashboard content as a Rich renderable.
 
@@ -2142,6 +2288,8 @@ def handle_command(line: str, state, project_root: Path) -> bool:
         cmd_reset(state, args, project_root)
     elif cmd == "clean":
         cmd_clean(state, args, project_root)
+    elif cmd in ("tickets", "t"):
+        cmd_tickets(state, args, project_root)
     elif cmd == "tui":
         from crew.tui import main as tui_main
         tui_main(runner=_runner, project_root=project_root)
