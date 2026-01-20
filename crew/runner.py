@@ -739,6 +739,22 @@ def step_agent(
     result = response["result"]
     stderr = response["stderr"]
 
+    # Check for session errors in stderr and auto-recover by regenerating session ID
+    # This handles "Session ID already in use" errors from Claude Code
+    if stderr and "session" in stderr.lower() and ("in use" in stderr.lower() or "error" in stderr.lower()):
+        # Generate new session ID and retry once
+        agent.session = generate_session_id()
+        save_state(state, project_root)
+        # Retry with new session (as new session since we just generated it)
+        response = run_claude(
+            prompt,
+            cwd=agent.worktree,
+            session=agent.session,
+            is_new_session=True,
+        )
+        result = response["result"]
+        stderr = response["stderr"]
+
     # Accumulate token usage
     agent.total_input_tokens += response["input_tokens"]
     agent.total_output_tokens += response["output_tokens"]
