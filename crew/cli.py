@@ -33,9 +33,18 @@ from crew.display import (
     print_git_status_panels,
     get_status_icon,
 )
-from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks, shutdown_agent, find_claude_process, resolve_merge_conflicts
+from crew.runner import spawn_agent, spawn_worker, step_agent, cleanup_agent, assign_task, complete_task, get_ready_tasks, shutdown_agent, find_claude_process, resolve_merge_conflicts, reconcile_agent_state
 from crew.crew_logging import read_log_tail, read_all_logs
 from crew.git import get_worktree_list, has_uncommitted_changes, remove_worktree, is_merge_in_progress, get_conflicted_files, abort_merge
+from crew.stuck_detection import (
+    StuckTracker,
+    check_if_stuck,
+    should_backoff,
+    record_error,
+    record_success,
+    reset_tracker,
+    update_output_hash,
+)
 
 console = Console()
 
@@ -67,9 +76,9 @@ class BackgroundRunner:
         self._merge_lock = threading.Lock()
         # Store executor reference for clean shutdown
         self._executor = None
-        # Error tracking for backoff
-        self._error_counts: dict[str, int] = {}  # agent_name -> consecutive error count
-        self._error_backoff_until: dict[str, float] = {}  # agent_name -> time.time() to retry
+        # Consolidated stuck tracking per agent
+        self._trackers: dict[str, StuckTracker] = {}
+        self._last_stall_check: float = 0
 
     def start(self):
         """Start the background runner."""
@@ -78,8 +87,8 @@ class BackgroundRunner:
         self.running = True
         self._stepping = set()
         self._recently_completed = set()  # Clear on start to allow re-opened tasks
-        self._error_counts = {}  # Clear error tracking on fresh start
-        self._error_backoff_until = {}
+        self._trackers = {}  # Clear stuck tracking on fresh start
+        self._last_stall_check = 0
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
         return True
@@ -107,8 +116,6 @@ class BackgroundRunner:
 
     def _get_working_agents(self) -> list:
         """Get agents that are ready or working and not currently being stepped."""
-        import time
-        now = time.time()
         with self._lock:
             agents = []
             for a in self.state.agents.values():
@@ -117,8 +124,8 @@ class BackgroundRunner:
                 if a.name in self._stepping:
                     continue
                 # Skip agents in error backoff
-                backoff_until = self._error_backoff_until.get(a.name, 0)
-                if now < backoff_until:
+                tracker = self._trackers.get(a.name)
+                if tracker and should_backoff(tracker):
                     continue
                 agents.append(a)
             return agents
@@ -152,6 +159,120 @@ class BackgroundRunner:
                     agent.last_step_at = None
                     save_state(self.state, self.project_root)
 
+    def _recover_stuck_agents(self):
+        """Recover stuck agents based on their worktree state.
+
+        Uses reconcile_agent_state() to determine the correct status based
+        on observable state:
+        - No worktree → idle
+        - Worktree + DONE marker → done
+        - Worktree + dirty → working
+        - Worktree + clean → ready
+        """
+        from crew.runner import generate_session_id
+        from crew.state import save_state
+
+        for agent in list(self.state.agents.values()):
+            if agent.status != "stuck":
+                continue
+
+            # Use reconcile_agent_state to determine correct status
+            new_status = reconcile_agent_state(agent, self.project_root)
+
+            if new_status == "idle":
+                # No worktree - reset completely
+                self.events.put(RunnerEvent("info", agent.name, "Resetting stuck agent to idle (no worktree)"))
+                agent.session = ""
+                agent.worktree = None
+                agent.branch = ""
+                agent.task = None
+                agent.status = "idle"
+                agent.step_count = 0
+                agent.last_step_at = None
+            else:
+                # Worktree exists - generate new session and set status
+                agent.session = generate_session_id()
+                agent.status = new_status
+                self.events.put(RunnerEvent("info", agent.name, f"Recovering stuck agent → {new_status}"))
+
+                if new_status == "ready":
+                    agent.step_count = 0
+
+            save_state(self.state, self.project_root)
+
+            # Clear stuck tracking for this agent
+            with self._lock:
+                if agent.name in self._trackers:
+                    reset_tracker(self._trackers[agent.name])
+
+    def _check_stalled_agents(self, stall_minutes: int = 5):
+        """Check for agents whose output hasn't changed in stall_minutes.
+
+        If an agent's session file output hasn't changed for the threshold,
+        kill the Claude process and let it restart on the next step.
+        """
+        from crew.crew_logging import get_session_file_path
+
+        for agent in list(self.state.agents.values()):
+            # Only check working agents that aren't currently being stepped
+            if agent.status != "working":
+                continue
+            if agent.name in self._stepping:
+                continue
+            if not agent.worktree or not agent.session:
+                continue
+
+            # Get the session file
+            session_file = get_session_file_path(agent.worktree, agent.session)
+            if session_file is None:
+                continue
+
+            try:
+                # Get or create tracker for this agent
+                tracker = self._trackers.setdefault(agent.name, StuckTracker())
+
+                # Hash last 20 lines of output
+                content = session_file.read_text()
+                lines = content.split('\n')[-20:]
+                update_output_hash(tracker, '\n'.join(lines))
+
+                # Check if stalled using the tracker
+                stuck_reason = check_if_stuck(agent, tracker=tracker, stall_minutes=stall_minutes)
+                if stuck_reason and stuck_reason.reason == "stalled":
+                    self.events.put(RunnerEvent(
+                        "error", agent.name,
+                        f"{stuck_reason.details} - killing process"
+                    ))
+                    # Kill the Claude process
+                    self._kill_stalled_agent(agent)
+            except Exception:
+                # Ignore errors reading session file
+                pass
+
+    def _kill_stalled_agent(self, agent):
+        """Kill a stalled agent's Claude process so it can restart."""
+        from crew.runner import find_claude_process, generate_session_id
+        from crew.state import save_state
+
+        # Find and kill the Claude process
+        pid = find_claude_process(agent)
+        if pid:
+            import os
+            import signal
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+        # Generate new session ID so next step starts fresh
+        agent.session = generate_session_id()
+        save_state(self.state, self.project_root)
+
+        # Reset the tracker for this agent
+        with self._lock:
+            if agent.name in self._trackers:
+                reset_tracker(self._trackers[agent.name])
+
     def _assign_work(self):
         """Poll for ready tasks and assign to idle agents."""
         idle_agents = self._get_idle_agents()
@@ -181,10 +302,10 @@ class BackgroundRunner:
             preview = output[:60].replace('\n', ' ') if output else ""
             self.events.put(RunnerEvent("step", agent.name, preview))
 
-            # Reset error count on successful step
+            # Reset error tracking on successful step
             with self._lock:
-                self._error_counts[agent.name] = 0
-                self._error_backoff_until.pop(agent.name, None)
+                tracker = self._trackers.setdefault(agent.name, StuckTracker())
+                record_success(tracker)
 
             # Loop while agent keeps saying DONE (for test failure retries)
             while agent.is_done:
@@ -217,31 +338,22 @@ class BackgroundRunner:
                     break  # Don't loop forever on persistent errors
 
         except Exception as e:
-            import time
             error_msg = str(e)
             self.events.put(RunnerEvent("error", agent.name, error_msg))
 
-            # Track consecutive errors for backoff
+            # Track consecutive errors for backoff using stuck_detection module
             with self._lock:
-                self._error_counts[agent.name] = self._error_counts.get(agent.name, 0) + 1
-                error_count = self._error_counts[agent.name]
+                tracker = self._trackers.setdefault(agent.name, StuckTracker())
+                error_count = record_error(tracker)
 
-                # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s max
-                backoff_secs = min(60, 2 ** error_count)
-                self._error_backoff_until[agent.name] = time.time() + backoff_secs
-
-                # Mark as stuck after 5 consecutive errors
-                if error_count >= 5:
+                # Check if agent should be marked as stuck
+                stuck_reason = check_if_stuck(agent, tracker=tracker)
+                if stuck_reason and stuck_reason.reason == "error_limit":
                     agent.status = "stuck"
                     save_state(self.state, self.project_root)
-                    self.events.put(RunnerEvent("error", agent.name, f"Marked as stuck after {error_count} consecutive errors"))
+                    self.events.put(RunnerEvent("error", agent.name, f"Marked as stuck: {stuck_reason.details}"))
 
-            # Regenerate session ID on timeout or session errors
-            # This prevents "Session ID already in use" errors on retry
-            if "timeout" in error_msg.lower() or "session" in error_msg.lower():
-                from crew.runner import generate_session_id
-                agent.session = generate_session_id()
-                save_state(self.state, self.project_root)
+            # Note: Session regeneration on timeout/session errors is handled in runner.py step_agent()
         finally:
             with self._lock:
                 self._stepping.discard(agent.name)
@@ -257,6 +369,14 @@ class BackgroundRunner:
                 # Recover any agents stuck in "done" with missing worktrees
                 # (happens if complete_task partially completed but crashed)
                 self._recover_done_agents()
+
+                # Recover stuck agents based on worktree state
+                self._recover_stuck_agents()
+
+                # Check for stalled agents every 30 seconds
+                if time.time() - self._last_stall_check > 30:
+                    self._check_stalled_agents()
+                    self._last_stall_check = time.time()
 
                 # First, try to assign work to idle agents
                 self._assign_work()

@@ -8,6 +8,7 @@ import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 import os
 import signal
@@ -980,6 +981,45 @@ def check_work_completed(agent: Agent, project_root: Path | None = None) -> str:
             pass  # If git check fails, fall through to "nothing"
 
     return "nothing"
+
+
+def reconcile_agent_state(
+    agent: Agent,
+    project_root: Path | None = None,
+) -> Literal["idle", "ready", "working", "done"]:
+    """Determine correct agent status based on observable state.
+
+    This is the single source of truth for recovery decisions.
+    Based on worktree existence and work completion status:
+    - No worktree → idle
+    - Worktree exists + DONE marker → done
+    - Worktree exists + dirty (uncommitted changes) → working
+    - Worktree exists + clean → ready
+
+    Args:
+        agent: The agent to reconcile
+        project_root: Project root path
+
+    Returns:
+        The correct status for the agent based on observable state
+    """
+    project_root = project_root or Path.cwd()
+
+    # No worktree → idle
+    if not agent.worktree or not Path(agent.worktree).exists():
+        return "idle"
+
+    # Check for DONE marker in logs
+    work_status = check_work_completed(agent, project_root)
+    if work_status == "done":
+        return "done"
+
+    # Check worktree state
+    state = get_worktree_state(agent.worktree)
+    if state["is_dirty"]:
+        return "working"
+
+    return "ready"
 
 
 def shutdown_agent(

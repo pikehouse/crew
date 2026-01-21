@@ -1478,3 +1478,404 @@ class TestDashboardSummaryMode:
         with patch("crew.cli._run_live_dashboard") as mock_live:
             cmd_dashboard(empty_state, ["-l", "-s"], project_root)
             mock_live.assert_called_once_with(empty_state, project_root, show_summaries=True)
+
+
+class TestBackgroundRunnerStallDetection:
+    """Test the BackgroundRunner stall detection functionality."""
+
+    def test_stall_detection_init(self, project_root: Path, empty_state: State):
+        """Test BackgroundRunner initializes stall detection tracking."""
+        from crew.cli import BackgroundRunner
+
+        runner = BackgroundRunner(empty_state, project_root)
+        assert runner._trackers == {}
+        assert runner._last_stall_check == 0
+
+    def test_stall_detection_cleared_on_start(self, project_root: Path, empty_state: State):
+        """Test stall tracking is cleared when runner starts."""
+        from crew.cli import BackgroundRunner
+        from crew.stuck_detection import StuckTracker
+
+        runner = BackgroundRunner(empty_state, project_root)
+        runner._trackers = {"old": StuckTracker(last_output_hash="hash", last_output_change=123.0)}
+        runner._last_stall_check = 999.0
+
+        # Mock thread to prevent actual background work
+        with patch.object(runner, '_run_loop'):
+            runner.start()
+
+        assert runner._trackers == {}
+        assert runner._last_stall_check == 0
+        runner.stop()
+
+    def test_check_stalled_agents_skips_non_working(self, project_root: Path):
+        """Test _check_stalled_agents skips non-working agents."""
+        from crew.cli import BackgroundRunner
+
+        state = State()
+        idle_agent = Agent(
+            name="idle",
+            session="sess",
+            worktree=Path("/tmp/idle"),
+            branch="main",
+            status="idle",
+        )
+        state.add_agent(idle_agent)
+
+        runner = BackgroundRunner(state, project_root)
+        # Should not crash and should not add to tracker
+        runner._check_stalled_agents()
+        assert "idle" not in runner._trackers
+
+    def test_check_stalled_agents_skips_stepping(self, project_root: Path):
+        """Test _check_stalled_agents skips agents currently being stepped."""
+        from crew.cli import BackgroundRunner
+
+        state = State()
+        agent = Agent(
+            name="stepping",
+            session="sess",
+            worktree=Path("/tmp/stepping"),
+            branch="main",
+            status="working",
+        )
+        state.add_agent(agent)
+
+        runner = BackgroundRunner(state, project_root)
+        runner._stepping.add("stepping")
+
+        runner._check_stalled_agents()
+        assert "stepping" not in runner._trackers
+
+    def test_check_stalled_agents_updates_hash_on_change(self, project_root: Path, tmp_path: Path):
+        """Test _check_stalled_agents updates hash when output changes."""
+        from crew.cli import BackgroundRunner
+
+        # Create a fake worktree
+        worktree = tmp_path / "test-worktree"
+        worktree.mkdir()
+
+        # Create the Claude session file
+        worktree_str = str(worktree.resolve())
+        project_dir_name = worktree_str.replace("/", "-")
+        claude_dir = Path.home() / ".claude" / "projects" / project_dir_name
+        claude_dir.mkdir(parents=True, exist_ok=True)
+
+        session_id = "test-session-stall"
+        session_file = claude_dir / f"{session_id}.jsonl"
+        session_file.write_text('{"type": "message", "content": "line1"}\n')
+
+        try:
+            state = State()
+            agent = Agent(
+                name="hash-test",
+                session=session_id,
+                worktree=worktree,
+                branch="main",
+                status="working",
+            )
+            state.add_agent(agent)
+
+            runner = BackgroundRunner(state, project_root)
+            runner._check_stalled_agents()
+
+            # Tracker should be created with hash
+            assert "hash-test" in runner._trackers
+            first_hash = runner._trackers["hash-test"].last_output_hash
+            first_time = runner._trackers["hash-test"].last_output_change
+
+            # Change the file content
+            session_file.write_text('{"type": "message", "content": "line2"}\n')
+
+            import time
+            time.sleep(0.01)  # Small delay to ensure time difference
+
+            runner._check_stalled_agents()
+
+            # Hash should be updated
+            second_hash = runner._trackers["hash-test"].last_output_hash
+            second_time = runner._trackers["hash-test"].last_output_change
+            assert second_hash != first_hash
+            assert second_time >= first_time
+
+        finally:
+            # Cleanup
+            session_file.unlink()
+            claude_dir.rmdir()
+
+    def test_check_stalled_agents_detects_stall(self, project_root: Path, tmp_path: Path):
+        """Test _check_stalled_agents detects stalled agent after threshold."""
+        from crew.cli import BackgroundRunner
+        from crew.stuck_detection import StuckTracker
+        import time
+
+        # Create a fake worktree
+        worktree = tmp_path / "stall-worktree"
+        worktree.mkdir()
+
+        # Create the Claude session file
+        worktree_str = str(worktree.resolve())
+        project_dir_name = worktree_str.replace("/", "-")
+        claude_dir = Path.home() / ".claude" / "projects" / project_dir_name
+        claude_dir.mkdir(parents=True, exist_ok=True)
+
+        session_id = "stall-session"
+        session_file = claude_dir / f"{session_id}.jsonl"
+        session_file.write_text('{"type": "message", "content": "stalled"}\n')
+
+        try:
+            state = State()
+            agent = Agent(
+                name="stall-agent",
+                session=session_id,
+                worktree=worktree,
+                branch="main",
+                status="working",
+            )
+            state.add_agent(agent)
+
+            runner = BackgroundRunner(state, project_root)
+
+            # First check - records hash (use large stall_minutes so no stall detected)
+            runner._check_stalled_agents(stall_minutes=999)
+
+            # Manually set the last change time to the past to trigger stall
+            tracker = runner._trackers["stall-agent"]
+            tracker.last_output_change = time.time() - 400  # 6+ minutes ago
+
+            # Mock _kill_stalled_agent to verify it's called
+            # Use a tiny stall threshold to guarantee detection
+            with patch.object(runner, '_kill_stalled_agent') as mock_kill:
+                runner._check_stalled_agents(stall_minutes=1)  # 1 minute threshold, 6+ min stall
+                mock_kill.assert_called_once_with(agent)
+
+        finally:
+            # Cleanup
+            session_file.unlink()
+            claude_dir.rmdir()
+
+    def test_kill_stalled_agent_generates_new_session(self, project_root: Path, tmp_path: Path):
+        """Test _kill_stalled_agent generates new session ID."""
+        from crew.cli import BackgroundRunner
+        from crew.stuck_detection import StuckTracker
+
+        worktree = tmp_path / "kill-worktree"
+        worktree.mkdir()
+
+        state = State()
+        agent = Agent(
+            name="kill-agent",
+            session="old-session",
+            worktree=worktree,
+            branch="main",
+            status="working",
+        )
+        state.add_agent(agent)
+
+        runner = BackgroundRunner(state, project_root)
+        runner._trackers["kill-agent"] = StuckTracker(last_output_hash="some-hash", last_output_change=123.0)
+
+        with patch("crew.runner.find_claude_process") as mock_find:
+            mock_find.return_value = None  # No process to kill
+            with patch("crew.cli.save_state"):
+                runner._kill_stalled_agent(agent)
+
+        # Session should be regenerated
+        assert agent.session != "old-session"
+        assert len(agent.session) > 0
+
+        # Tracker should be reset for this agent
+        tracker = runner._trackers["kill-agent"]
+        assert tracker.last_output_hash is None
+        assert tracker.last_output_change is None
+
+    def test_kill_stalled_agent_kills_process(self, project_root: Path, tmp_path: Path):
+        """Test _kill_stalled_agent kills the Claude process."""
+        from crew.cli import BackgroundRunner
+        import signal
+
+        worktree = tmp_path / "kill-proc-worktree"
+        worktree.mkdir()
+
+        state = State()
+        agent = Agent(
+            name="kill-proc-agent",
+            session="proc-session",
+            worktree=worktree,
+            branch="main",
+            status="working",
+        )
+        state.add_agent(agent)
+
+        runner = BackgroundRunner(state, project_root)
+
+        with patch("crew.runner.find_claude_process") as mock_find:
+            mock_find.return_value = 12345  # Fake PID
+            with patch("os.kill") as mock_kill:
+                with patch("crew.cli.save_state"):
+                    runner._kill_stalled_agent(agent)
+
+                mock_kill.assert_called_once_with(12345, signal.SIGTERM)
+
+
+class TestBackgroundRunnerStuckRecovery:
+    """Test the BackgroundRunner stuck agent recovery functionality."""
+
+    def test_recover_stuck_agents_no_worktree_resets_to_idle(self, project_root: Path):
+        """Test stuck agent with no worktree is reset to idle."""
+        from crew.cli import BackgroundRunner
+
+        state = State()
+        agent = Agent(
+            name="stuck-no-wt",
+            session="old-session",
+            worktree=Path("/nonexistent/path"),
+            branch="agent/stuck-no-wt",
+            task="some-task",
+            status="stuck",
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        runner = BackgroundRunner(state, project_root)
+
+        with patch("crew.cli.save_state"):
+            runner._recover_stuck_agents()
+
+        assert agent.status == "idle"
+        assert agent.worktree is None
+        assert agent.task is None
+        assert agent.branch == ""
+        assert agent.step_count == 0
+
+    def test_recover_stuck_agents_dirty_worktree_resets_to_working(self, project_root: Path, tmp_path: Path):
+        """Test stuck agent with dirty worktree is reset to working."""
+        from crew.cli import BackgroundRunner
+
+        worktree = tmp_path / "dirty-worktree"
+        worktree.mkdir()
+
+        state = State()
+        agent = Agent(
+            name="stuck-dirty",
+            session="old-session",
+            worktree=worktree,
+            branch="agent/stuck-dirty",
+            task="dirty-task",
+            status="stuck",
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        runner = BackgroundRunner(state, project_root)
+
+        with patch("crew.git.has_uncommitted_changes") as mock_dirty:
+            mock_dirty.return_value = True
+            with patch("crew.cli.save_state"):
+                runner._recover_stuck_agents()
+
+        assert agent.status == "working"
+        assert agent.session != "old-session"  # New session generated
+        assert agent.task == "dirty-task"  # Task preserved
+        assert agent.step_count == 5  # Step count preserved for dirty
+
+    def test_recover_stuck_agents_clean_worktree_resets_to_ready(self, project_root: Path, tmp_path: Path):
+        """Test stuck agent with clean worktree is reset to ready."""
+        from crew.cli import BackgroundRunner
+
+        worktree = tmp_path / "clean-worktree"
+        worktree.mkdir()
+
+        state = State()
+        agent = Agent(
+            name="stuck-clean",
+            session="old-session",
+            worktree=worktree,
+            branch="agent/stuck-clean",
+            task="clean-task",
+            status="stuck",
+            step_count=5,
+        )
+        state.add_agent(agent)
+
+        runner = BackgroundRunner(state, project_root)
+
+        with patch("crew.git.has_uncommitted_changes") as mock_dirty:
+            mock_dirty.return_value = False
+            with patch("crew.cli.save_state"):
+                runner._recover_stuck_agents()
+
+        assert agent.status == "ready"
+        assert agent.session != "old-session"  # New session generated
+        assert agent.task == "clean-task"  # Task preserved
+        assert agent.step_count == 0  # Step count reset for clean
+
+    def test_recover_stuck_agents_clears_error_tracking(self, project_root: Path, tmp_path: Path):
+        """Test stuck agent recovery clears error tracking."""
+        from crew.cli import BackgroundRunner
+        from crew.stuck_detection import StuckTracker
+
+        worktree = tmp_path / "error-track-worktree"
+        worktree.mkdir()
+
+        state = State()
+        agent = Agent(
+            name="stuck-errors",
+            session="old-session",
+            worktree=worktree,
+            branch="agent/stuck-errors",
+            task="error-task",
+            status="stuck",
+        )
+        state.add_agent(agent)
+
+        runner = BackgroundRunner(state, project_root)
+        runner._trackers["stuck-errors"] = StuckTracker(
+            error_count=5,
+            backoff_until=999999.0,
+            last_output_hash="hash",
+            last_output_change=123.0,
+        )
+
+        with patch("crew.runner.reconcile_agent_state") as mock_reconcile:
+            mock_reconcile.return_value = "ready"
+            with patch("crew.cli.save_state"):
+                runner._recover_stuck_agents()
+
+        # Tracker should be reset (not removed, but all fields cleared)
+        tracker = runner._trackers["stuck-errors"]
+        assert tracker.error_count == 0
+        assert tracker.backoff_until == 0.0
+        assert tracker.last_output_hash is None
+        assert tracker.last_output_change is None
+
+    def test_recover_stuck_agents_skips_non_stuck(self, project_root: Path):
+        """Test recovery only affects stuck agents."""
+        from crew.cli import BackgroundRunner
+
+        state = State()
+        working_agent = Agent(
+            name="working",
+            session="sess",
+            worktree=Path("/tmp/working"),
+            branch="main",
+            status="working",
+        )
+        idle_agent = Agent(
+            name="idle",
+            session="",
+            worktree=None,
+            branch="",
+            status="idle",
+        )
+        state.add_agent(working_agent)
+        state.add_agent(idle_agent)
+
+        runner = BackgroundRunner(state, project_root)
+
+        with patch("crew.cli.save_state"):
+            runner._recover_stuck_agents()
+
+        # Non-stuck agents should be unchanged
+        assert working_agent.status == "working"
+        assert idle_agent.status == "idle"
