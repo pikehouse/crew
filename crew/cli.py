@@ -2000,19 +2000,29 @@ def render_dashboard(state, project_root: Path, runner_active: bool = False, sho
         # Color palette for agent panels
         colors = ["cyan", "green", "yellow", "magenta", "blue", "red"]
 
-        # Log tail panels for working agents
+        # Live Claude output panels for working agents
+        from crew.crew_logging import read_live_session
         working_agents = [a for a in state.agents.values() if a.status in ("ready", "working")]
         if working_agents:
             renderables.append(Text(""))  # Empty line
             for i, agent in enumerate(working_agents):
                 color = colors[i % len(colors)]
-                content = read_log_tail(agent.name, lines=5, project_root=project_root)
+                content = None
+
+                # Try to read live session first (real-time output)
+                if agent.worktree and agent.session:
+                    content = read_live_session(agent.worktree, agent.session, lines=3)
+
+                # Fall back to log tail if no live session
+                if not content:
+                    content = read_log_tail(agent.name, lines=5, project_root=project_root)
+
                 if content:
                     # Truncate long lines for display
                     lines = content.split("\n")
                     truncated = "\n".join(
                         line[:100] + "..." if len(line) > 100 else line
-                        for line in lines[-5:]
+                        for line in lines[-8:]
                     )
                     header = f"● {agent.name}"
                     if agent.task:

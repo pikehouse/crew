@@ -132,3 +132,65 @@ def read_all_logs(agent_name: str, project_root: Path | None = None) -> str | No
     for log_file in logs:
         contents.append(log_file.read_text())
     return "\n".join(contents)
+
+
+def read_live_session(worktree: Path, session_id: str, lines: int = 10) -> str | None:
+    """Read live output from a Claude session file.
+
+    Claude writes session data to ~/.claude/projects/<project-path>/<session>.jsonl
+    in real-time. This function reads the latest assistant messages.
+
+    Args:
+        worktree: Path to the agent's worktree
+        session_id: The agent's session ID
+        lines: Number of recent entries to check
+
+    Returns:
+        Recent assistant output text, or None if not available.
+    """
+    import json
+
+    # Convert worktree path to Claude's project directory format
+    # e.g., /Users/foo/x/bolo -> -Users-foo-x-bolo
+    worktree_str = str(worktree.resolve())
+    project_dir_name = worktree_str.replace("/", "-")
+    if project_dir_name.startswith("-"):
+        project_dir_name = project_dir_name  # Keep leading dash
+
+    # Find the session file
+    claude_dir = Path.home() / ".claude" / "projects" / project_dir_name
+    session_file = claude_dir / f"{session_id}.jsonl"
+
+    if not session_file.exists():
+        return None
+
+    try:
+        # Read last N lines of the JSONL file
+        content = session_file.read_text()
+        json_lines = [l for l in content.strip().split("\n") if l.strip()]
+
+        # Parse recent entries looking for assistant messages with text
+        texts = []
+        for line in json_lines[-lines * 3:]:  # Check more lines to find text
+            try:
+                entry = json.loads(line)
+                if entry.get("type") == "assistant":
+                    message = entry.get("message", {})
+                    content_list = message.get("content", [])
+                    for item in content_list:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            text = item.get("text", "")
+                            if text:
+                                texts.append(text)
+            except json.JSONDecodeError:
+                continue
+
+        if not texts:
+            return None
+
+        # Return last few text outputs, truncated
+        result = "\n---\n".join(texts[-lines:])
+        return result[-2000:] if len(result) > 2000 else result  # Limit size
+
+    except Exception:
+        return None
