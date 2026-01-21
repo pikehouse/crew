@@ -439,7 +439,8 @@ class TestAssignTask:
         # Mock create_worktree and get_task_description
         with patch("crew.runner.create_worktree") as mock_create_wt, \
              patch("crew.runner.get_task_description") as mock_get_desc, \
-             patch("crew.runner.generate_session_id") as mock_gen_session:
+             patch("crew.runner.generate_session_id") as mock_gen_session, \
+             patch("crew.runner.remove_worktree"):
 
             worktree_path = project_root / "agents" / "test-agent-c-123"
             worktree_path.mkdir(parents=True, exist_ok=True)
@@ -463,7 +464,8 @@ class TestAssignTask:
 
         with patch("crew.runner.create_worktree") as mock_create_wt, \
              patch("crew.runner.get_task_description") as mock_get_desc, \
-             patch("crew.runner.generate_session_id") as mock_gen_session:
+             patch("crew.runner.generate_session_id") as mock_gen_session, \
+             patch("crew.runner.remove_worktree"):
 
             worktree_path = project_root / "agents" / "test-agent-c-456"
             worktree_path.mkdir(parents=True, exist_ok=True)
@@ -508,7 +510,8 @@ class TestAssignTask:
 
         with patch("crew.runner.create_worktree") as mock_create_wt, \
              patch("crew.runner.get_task_description") as mock_get_desc, \
-             patch("crew.runner.generate_session_id") as mock_gen_session:
+             patch("crew.runner.generate_session_id") as mock_gen_session, \
+             patch("crew.runner.remove_worktree"):
 
             worktree_path = project_root / "agents" / "test-agent-c-789"
             worktree_path.mkdir(parents=True, exist_ok=True)

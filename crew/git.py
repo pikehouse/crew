@@ -43,6 +43,10 @@ def create_worktree(name: str, agents_dir: Path | None = None, force_clean: bool
     worktree_path = agents_dir / name
     branch_name = f"agent/{name}"
 
+    # Determine project root (parent of agents_dir) for git commands
+    # This is needed because git worktree commands must run from within the repo
+    project_root = agents_dir.parent if agents_dir.is_absolute() else None
+
     if worktree_path.exists():
         if force_clean:
             # Clean up stale worktree
@@ -53,25 +57,48 @@ def create_worktree(name: str, agents_dir: Path | None = None, force_clean: bool
     # Create worktree with new branch
     # Try to create with new branch first, fall back to existing branch
     # Prune stale worktree entries first (e.g. from manually deleted dirs)
-    run_git("worktree", "prune")
+    run_git("worktree", "prune", cwd=project_root)
 
     try:
-        run_git("worktree", "add", str(worktree_path), "-b", branch_name)
+        run_git("worktree", "add", str(worktree_path), "-b", branch_name, cwd=project_root)
     except GitError:
         # Branch might already exist, try without -b
-        run_git("worktree", "add", str(worktree_path), branch_name)
+        run_git("worktree", "add", str(worktree_path), branch_name, cwd=project_root)
 
     return worktree_path
 
 
 def remove_worktree(worktree_path: Path) -> None:
-    """Remove a git worktree."""
+    """Remove a git worktree.
+
+    Handles both actual git worktrees and regular directories (for cleanup).
+    """
+    # Determine project root for git commands
+    # Worktree path is typically project_root/agents/worktree_name
+    project_root = worktree_path.parent.parent if worktree_path.is_absolute() else None
+
     if not worktree_path.exists():
         # Directory gone but git might still have it registered - prune stale entries
-        run_git("worktree", "prune")
+        try:
+            run_git("worktree", "prune", cwd=project_root)
+        except GitError:
+            pass  # Not a git repo, nothing to prune
         return
 
-    run_git("worktree", "remove", str(worktree_path), "--force")
+    # Check if this is actually a git worktree (has .git file)
+    git_file = worktree_path / ".git"
+    if git_file.exists() and git_file.is_file():
+        # It's a git worktree - use git worktree remove
+        try:
+            run_git("worktree", "remove", str(worktree_path), "--force", cwd=project_root)
+            return
+        except GitError:
+            pass  # Fall through to directory removal
+
+    # Not a git worktree or git remove failed - just remove the directory
+    import shutil
+    if worktree_path.exists():
+        shutil.rmtree(worktree_path)
 
 
 def get_current_branch(cwd: Path | None = None) -> str:

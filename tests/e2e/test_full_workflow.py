@@ -136,7 +136,8 @@ class TestAssignTasksE2E:
 
         # Mock create_worktree and get_task_description
         with patch("crew.runner.create_worktree") as mock_wt, \
-             patch("crew.runner.get_task_description") as mock_desc:
+             patch("crew.runner.get_task_description") as mock_desc, \
+             patch("crew.runner.remove_worktree"):
 
             worktree_path = sample_project / "agents" / "task-worker-t-0002"
             worktree_path.mkdir(parents=True, exist_ok=True)
@@ -156,7 +157,8 @@ class TestAssignTasksE2E:
         agent = spawn_worker("claude-md-worker", state, project_root=sample_project)
 
         with patch("crew.runner.create_worktree") as mock_wt, \
-             patch("crew.runner.get_task_description") as mock_desc:
+             patch("crew.runner.get_task_description") as mock_desc, \
+             patch("crew.runner.remove_worktree"):
 
             worktree_path = sample_project / "agents" / "claude-md-worker-t-0003"
             worktree_path.mkdir(parents=True, exist_ok=True)
@@ -187,7 +189,8 @@ class TestAssignTasksE2E:
         worker2 = spawn_worker("multi-2", state, project_root=sample_project)
 
         with patch("crew.runner.create_worktree") as mock_wt, \
-             patch("crew.runner.get_task_description") as mock_desc:
+             patch("crew.runner.get_task_description") as mock_desc, \
+             patch("crew.runner.remove_worktree"):
 
             # First worker
             wt1 = sample_project / "agents" / "multi-1-t-0002"
@@ -535,7 +538,8 @@ class TestFullWorkflowE2E:
 
         # 2. Assign task
         with patch("crew.runner.create_worktree") as mock_wt, \
-             patch("crew.runner.get_task_description") as mock_desc:
+             patch("crew.runner.get_task_description") as mock_desc, \
+             patch("crew.runner.remove_worktree"):
 
             worktree_path = sample_project / "agents" / "full-workflow-agent-t-0002"
             worktree_path.mkdir(parents=True, exist_ok=True)
@@ -587,7 +591,8 @@ class TestFullWorkflowE2E:
             agent = spawn_worker(f"multi-agent-{i}", state, project_root=sample_project)
 
             with patch("crew.runner.create_worktree") as mock_wt, \
-                 patch("crew.runner.get_task_description") as mock_desc:
+                 patch("crew.runner.get_task_description") as mock_desc, \
+                 patch("crew.runner.remove_worktree"):
 
                 worktree = sample_project / "agents" / f"multi-agent-{i}-t-000{i+2}"
                 worktree.mkdir(parents=True, exist_ok=True)
@@ -653,7 +658,8 @@ class TestFullWorkflowE2E:
         # Set up both agents
         for agent, task_id in [(good_agent, "t-0002"), (stuck_agent, "t-0003")]:
             with patch("crew.runner.create_worktree") as mock_wt, \
-                 patch("crew.runner.get_task_description") as mock_desc:
+                 patch("crew.runner.get_task_description") as mock_desc, \
+                 patch("crew.runner.remove_worktree"):
 
                 worktree = sample_project / "agents" / f"{agent.name}-{task_id}"
                 worktree.mkdir(parents=True, exist_ok=True)

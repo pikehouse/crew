@@ -112,10 +112,14 @@ Crew manages multiple AI coding agents that work in parallel on tasks from a tic
                     │  • 5+ consecutive step errors        │
                     │  • Exponential backoff exhausted     │
                     │                                      │
-                    │  Recovery requires:                  │
+                    │  Auto-recovery (on next run loop):   │
+                    │  • Worktree dirty → WORKING          │
+                    │  • Worktree clean → READY            │
+                    │  • No worktree → IDLE                │
+                    │                                      │
+                    │  Manual recovery:                    │
                     │  • `kill <name>` - reset to idle     │
                     │  • `cleanup <name>` - remove state   │
-                    │  • Manual intervention               │
                     └─────────────────────────────────────┘
 ```
 
@@ -200,6 +204,106 @@ Transition occurs when:
 
 ---
 
+## Stall Detection
+
+The runner monitors agent output to detect when an agent is stuck without producing new output.
+
+**How it works:**
+1. Every 30 seconds, the runner checks working agents
+2. For each agent, it hashes the last 20 lines of the session file (`~/.claude/projects/<path>/<session>.jsonl`)
+3. If the hash hasn't changed in 5 minutes, the agent is considered stalled
+
+**On stall detection:**
+1. Kill the Claude process (SIGTERM)
+2. Generate a new session ID
+3. Clear hash tracking for the agent
+4. Agent will restart on next runner loop iteration
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    STALL DETECTION                           │
+└─────────────────────────────────────────────────────────────┘
+
+Every 30 seconds:
+     │
+     ▼
+┌────────────────────────────┐
+│ For each working agent:    │
+│ Hash last 20 lines of      │
+│ session JSONL file         │
+└─────────────┬──────────────┘
+              │
+     ┌────────┴────────┐
+     │                 │
+Hash changed?     Hash unchanged?
+     │                 │
+     ▼                 ▼
+┌──────────┐    ┌──────────────────┐
+│ Update   │    │ Check duration   │
+│ tracking │    │ since last change│
+└──────────┘    └────────┬─────────┘
+                         │
+                ┌────────┴────────┐
+                │                 │
+            < 5 min           >= 5 min
+                │                 │
+                ▼                 ▼
+           ┌────────┐    ┌───────────────┐
+           │ Wait   │    │ Kill process  │
+           │        │    │ New session   │
+           └────────┘    │ Agent restarts│
+                         └───────────────┘
+```
+
+---
+
+## Stuck Agent Recovery
+
+When an agent enters the "stuck" state (5+ consecutive errors), it is automatically recovered on the next runner loop based on worktree state:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  STUCK AGENT RECOVERY                        │
+└─────────────────────────────────────────────────────────────┘
+
+For each stuck agent:
+     │
+     ▼
+┌────────────────────────────┐
+│ Check worktree exists?     │
+└─────────────┬──────────────┘
+              │
+     ┌────────┴────────┐
+     │                 │
+  No worktree      Worktree exists
+     │                 │
+     ▼                 ▼
+┌──────────┐    ┌──────────────────┐
+│ Reset to │    │ Check git status │
+│   IDLE   │    │ (uncommitted?)   │
+└──────────┘    └────────┬─────────┘
+                         │
+                ┌────────┴────────┐
+                │                 │
+            Clean            Dirty
+                │                 │
+                ▼                 ▼
+           ┌────────┐    ┌───────────────┐
+           │ Reset  │    │ Reset to      │
+           │ to     │    │ WORKING       │
+           │ READY  │    │ (continue)    │
+           └────────┘    └───────────────┘
+```
+
+**Recovery actions:**
+- **No worktree**: Reset to IDLE, task returns to queue
+- **Clean worktree**: Reset to READY with new session, restart from beginning
+- **Dirty worktree**: Reset to WORKING with new session, continue from where it left off
+
+This ensures stuck agents automatically retry without losing their work.
+
+---
+
 ## Error Handling & Backoff
 
 ```
@@ -217,6 +321,7 @@ Error Count │ Backoff Duration │ Action
 - Successful step resets error count to 0
 - Session errors trigger new session_id generation
 - Timeouts retry once with fresh session
+- Stalled agents are killed and restarted with new session
 
 ---
 

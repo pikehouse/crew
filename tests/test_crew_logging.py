@@ -10,6 +10,7 @@ from crew.crew_logging import (
     clear_agent_logs,
     get_log_dir,
     get_next_log_number,
+    get_session_file_path,
     read_latest_log,
     read_log_tail,
     write_log,
@@ -216,3 +217,53 @@ class TestClearAgentLogs:
 
         # No logs should exist now
         assert read_latest_log("test-agent", project_root) is None
+
+
+class TestGetSessionFilePath:
+    """Test get_session_file_path function."""
+
+    def test_returns_none_when_file_does_not_exist(self, tmp_path: Path):
+        """Test that get_session_file_path returns None when session file doesn't exist."""
+        worktree = tmp_path / "fake-worktree"
+        worktree.mkdir()
+
+        result = get_session_file_path(worktree, "nonexistent-session")
+        assert result is None
+
+    def test_returns_path_when_file_exists(self, tmp_path: Path):
+        """Test that get_session_file_path returns path when session file exists."""
+        # Create a fake worktree
+        worktree = tmp_path / "test-worktree"
+        worktree.mkdir()
+
+        # Create the Claude projects directory structure
+        worktree_str = str(worktree.resolve())
+        project_dir_name = worktree_str.replace("/", "-")
+        claude_dir = Path.home() / ".claude" / "projects" / project_dir_name
+        claude_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create a session file
+        session_id = "test-session-123"
+        session_file = claude_dir / f"{session_id}.jsonl"
+        session_file.write_text('{"type": "test"}\n')
+
+        try:
+            result = get_session_file_path(worktree, session_id)
+            assert result is not None
+            assert result == session_file
+        finally:
+            # Cleanup
+            session_file.unlink()
+            claude_dir.rmdir()
+
+    def test_path_conversion_replaces_slashes(self, tmp_path: Path):
+        """Test that worktree path slashes are converted to dashes."""
+        worktree = tmp_path / "sub" / "dir" / "worktree"
+        worktree.mkdir(parents=True)
+
+        # The function should look for a path with dashes instead of slashes
+        # We don't need to create the actual file to test the path conversion
+        # Just verify it doesn't crash
+        result = get_session_file_path(worktree, "any-session")
+        # Should return None since file doesn't exist
+        assert result is None

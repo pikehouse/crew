@@ -134,6 +134,32 @@ def read_all_logs(agent_name: str, project_root: Path | None = None) -> str | No
     return "\n".join(contents)
 
 
+def get_session_file_path(worktree: Path, session_id: str) -> Path | None:
+    """Get the path to a Claude session file.
+
+    Claude writes session data to ~/.claude/projects/<project-path>/<session>.jsonl
+
+    Args:
+        worktree: Path to the agent's worktree
+        session_id: The agent's session ID
+
+    Returns:
+        Path to the session file, or None if it doesn't exist.
+    """
+    # Convert worktree path to Claude's project directory format
+    # e.g., /Users/foo/x/bolo -> -Users-foo-x-bolo
+    worktree_str = str(worktree.resolve())
+    project_dir_name = worktree_str.replace("/", "-")
+
+    # Find the session file
+    claude_dir = Path.home() / ".claude" / "projects" / project_dir_name
+    session_file = claude_dir / f"{session_id}.jsonl"
+
+    if not session_file.exists():
+        return None
+    return session_file
+
+
 def read_live_session(worktree: Path, session_id: str, lines: int = 10) -> str | None:
     """Read live output from a Claude session file.
 
@@ -150,18 +176,8 @@ def read_live_session(worktree: Path, session_id: str, lines: int = 10) -> str |
     """
     import json
 
-    # Convert worktree path to Claude's project directory format
-    # e.g., /Users/foo/x/bolo -> -Users-foo-x-bolo
-    worktree_str = str(worktree.resolve())
-    project_dir_name = worktree_str.replace("/", "-")
-    if project_dir_name.startswith("-"):
-        project_dir_name = project_dir_name  # Keep leading dash
-
-    # Find the session file
-    claude_dir = Path.home() / ".claude" / "projects" / project_dir_name
-    session_file = claude_dir / f"{session_id}.jsonl"
-
-    if not session_file.exists():
+    session_file = get_session_file_path(worktree, session_id)
+    if session_file is None:
         return None
 
     try:
