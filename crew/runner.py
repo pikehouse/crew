@@ -728,11 +728,14 @@ def step_agent(
         save_state(state, project_root)
 
     # Run claude - first step creates session, subsequent resume it
+    # Use longer timeout for first step (exploration) vs subsequent steps
+    step_timeout = 600 if is_first_step else 300
     response = run_claude(
         prompt,
         cwd=agent.worktree,
         session=agent.session,
         is_new_session=is_first_step,
+        timeout=step_timeout,
     )
 
     # Extract result and stderr from response
