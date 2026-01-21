@@ -2228,16 +2228,18 @@ def _run_live_dashboard(state, project_root: Path, show_summaries: bool = False)
         # Set terminal to raw mode for single key detection
         tty.setcbreak(sys.stdin.fileno())
 
-        console.print("[dim]Live dashboard mode. Press 'q' to exit.[/dim]")
+        console.print("[dim]Live dashboard. Press 'q' or Ctrl+C to exit.[/dim]")
         console.print()
 
         with Live(console=console, refresh_per_second=0.5, screen=False) as live:
             while True:
-                # Check for 'q' key press (non-blocking)
-                if select.select([sys.stdin], [], [], 0)[0]:
-                    key = sys.stdin.read(1)
-                    if key.lower() == 'q':
-                        break
+                # Check for key press with short timeout (more responsive)
+                # Check multiple times per refresh cycle
+                for _ in range(4):
+                    if select.select([sys.stdin], [], [], 0.25)[0]:
+                        key = sys.stdin.read(1)
+                        if key.lower() == 'q' or ord(key) == 27:  # q or Escape
+                            raise KeyboardInterrupt  # Clean exit path
 
                 # Drain and display any pending runner events
                 if _runner:
@@ -2259,10 +2261,7 @@ def _run_live_dashboard(state, project_root: Path, show_summaries: bool = False)
                 runner_active = _runner is not None and _runner.is_running
                 dashboard = render_dashboard(state, project_root, runner_active, show_summaries=show_summaries)
                 live.update(dashboard)
-
-                # Sleep for 2 seconds (the refresh interval)
-                import time
-                time.sleep(2)
+                # Key checking loop above handles the ~1 second delay between refreshes
 
     except KeyboardInterrupt:
         pass
