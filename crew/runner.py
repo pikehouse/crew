@@ -285,7 +285,12 @@ def run_claude(
     Returns:
         Parsed JSON response with keys: result, input_tokens, output_tokens, cost_usd, stderr
     """
-    cmd = ["claude", "--print", "--output-format", "json"]
+    cmd = [
+        "claude",
+        "--print",
+        "--output-format", "json",
+        "--dangerously-skip-permissions",  # Agents work in isolated worktrees, skip permission prompts
+    ]
 
     if model:
         cmd.extend(["--model", model])
