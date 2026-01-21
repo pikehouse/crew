@@ -14,7 +14,7 @@ import signal
 
 from crew.agent import Agent
 from crew.crew_logging import clear_agent_logs, read_latest_log, write_log
-from crew.git import create_worktree, remove_worktree, merge_branch, delete_branch, run_git
+from crew.git import create_worktree, remove_worktree, merge_branch, delete_branch, run_git, get_worktree_state
 from crew.state import State, save_state
 
 
@@ -262,6 +262,14 @@ Test output:
 {test_output}
 
 Fix the issues and when done, output DONE on its own line."""
+
+RESUME_DIRTY_PROMPT = """Read CLAUDE.md for your assigned task.
+
+IMPORTANT: A previous session made progress on this task. Review what's already done before continuing:
+
+{context}
+
+Continue from where this work left off. Don't redo completed work. When the task is fully complete, output DONE on its own line."""
 
 
 def run_claude(
@@ -722,9 +730,25 @@ def step_agent(
     project_root = project_root or Path.cwd()
 
     # First step uses INIT_PROMPT, subsequent use STEP_PROMPT
+    # But if this is a "first step" with a dirty worktree, use RESUME_DIRTY_PROMPT
     is_first_step = agent.step_count == 0
     if prompt is None:
-        prompt = INIT_PROMPT if is_first_step else STEP_PROMPT
+        if is_first_step:
+            # Check if there's existing work from a previous session
+            worktree_state = get_worktree_state(agent.worktree)
+            if worktree_state["is_dirty"]:
+                # Build context from existing work
+                context_parts = []
+                if worktree_state["recent_commits"]:
+                    context_parts.append(f"Recent commits on this branch:\n{worktree_state['recent_commits']}")
+                if worktree_state["diff_summary"]:
+                    context_parts.append(f"Uncommitted changes:\n{worktree_state['diff_summary']}")
+                context = "\n\n".join(context_parts) if context_parts else "Some work exists but details unavailable."
+                prompt = RESUME_DIRTY_PROMPT.format(context=context)
+            else:
+                prompt = INIT_PROMPT
+        else:
+            prompt = STEP_PROMPT
 
     # Set status to working and save immediately
     # This ensures if interrupted during run_claude, state reflects we started stepping

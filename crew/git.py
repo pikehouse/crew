@@ -160,3 +160,67 @@ def get_conflicted_files(cwd: Path | None = None) -> list[str]:
 def abort_merge(cwd: Path | None = None) -> None:
     """Abort the current merge operation."""
     run_git("merge", "--abort", cwd=cwd)
+
+
+def get_worktree_state(cwd: Path | None = None) -> dict:
+    """Check worktree state for resuming interrupted work.
+
+    Returns dict with:
+        is_dirty: True if uncommitted changes or commits ahead of main
+        has_uncommitted: True if there are uncommitted changes
+        commits_ahead: Number of commits ahead of main
+        recent_commits: Summary of recent commits on this branch (if any)
+        diff_summary: Summary of uncommitted changes (if any)
+    """
+    cwd = cwd or Path.cwd()
+
+    result = {
+        "is_dirty": False,
+        "has_uncommitted": False,
+        "commits_ahead": 0,
+        "recent_commits": "",
+        "diff_summary": "",
+    }
+
+    # Check for uncommitted changes
+    result["has_uncommitted"] = has_uncommitted_changes(cwd)
+
+    # Check commits ahead of main
+    try:
+        # Get commits on this branch that aren't on main
+        commits = run_git("log", "main..HEAD", "--oneline", cwd=cwd)
+        if commits:
+            commit_lines = commits.strip().split("\n")
+            result["commits_ahead"] = len(commit_lines)
+            # Include up to 10 recent commits
+            result["recent_commits"] = "\n".join(commit_lines[:10])
+            if len(commit_lines) > 10:
+                result["recent_commits"] += f"\n... and {len(commit_lines) - 10} more"
+    except GitError:
+        # Branch might not have diverged from main yet
+        pass
+
+    # Get diff summary if there are uncommitted changes
+    if result["has_uncommitted"]:
+        try:
+            # Get stat summary of changes (staged + unstaged)
+            diff_stat = run_git("diff", "HEAD", "--stat", cwd=cwd)
+            if diff_stat:
+                result["diff_summary"] = diff_stat
+        except GitError:
+            # Fallback to just staged + unstaged separately
+            try:
+                staged = run_git("diff", "--cached", "--stat", cwd=cwd)
+                unstaged = run_git("diff", "--stat", cwd=cwd)
+                parts = []
+                if staged:
+                    parts.append(f"Staged:\n{staged}")
+                if unstaged:
+                    parts.append(f"Unstaged:\n{unstaged}")
+                result["diff_summary"] = "\n".join(parts)
+            except GitError:
+                pass
+
+    result["is_dirty"] = result["has_uncommitted"] or result["commits_ahead"] > 0
+
+    return result
