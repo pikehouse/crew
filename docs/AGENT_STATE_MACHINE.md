@@ -553,6 +553,118 @@ recover_session() runs at CLI startup:
 
 ---
 
+## Consolidated Stuck Detection
+
+All stuck detection logic is consolidated in `crew/stuck_detection.py`:
+
+```python
+@dataclass
+class StuckTracker:
+    """Tracks stuck detection state for a single agent."""
+    error_count: int = 0           # Consecutive errors
+    backoff_until: float = 0.0     # Time to wait before retry
+    last_output_hash: str | None   # For stall detection
+    last_output_change: float | None  # When output last changed
+
+def check_if_stuck(agent, tracker, step_limit=20, error_limit=5, stall_minutes=5):
+    """Single function to check all stuck conditions."""
+    # Returns StuckReason or None
+```
+
+**Three detection mechanisms unified:**
+
+| Mechanism | Trigger | Result |
+|-----------|---------|--------|
+| Step limit | `step_count >= 20` | Mark as DONE (or STUCK) |
+| Error limit | 5 consecutive errors | Mark as STUCK |
+| Output stall | No output change for 5 min | Kill process, restart |
+
+**State reconciliation** via `reconcile_agent_state()` in `runner.py`:
+
+```python
+def reconcile_agent_state(agent, project_root) -> Literal["idle", "ready", "working", "done"]:
+    """Single source of truth for determining agent status."""
+    # No worktree → idle
+    # Worktree + DONE marker → done
+    # Worktree + dirty → working
+    # Worktree + clean → ready
+```
+
+---
+
+## Testing the State Machine
+
+The state machine is validated by comprehensive **fault injection tests** that verify invariants hold under all conditions.
+
+### Test Categories
+
+```
+tests/fault_injection/
+├── test_assign.py      # Task assignment interrupts (7 tests)
+├── test_complete.py    # Task completion interrupts (10 tests)
+├── test_step.py        # Agent stepping interrupts (12 tests)
+├── test_recovery.py    # Recovery scenarios (15 tests)
+├── test_properties.py  # Property-based random sequences (5 tests)
+├── invariants.py       # Invariant checking utilities
+└── snapshots.py        # State snapshot utilities
+```
+
+### State Invariants
+
+These invariants are checked after every operation:
+
+```python
+INVARIANT_CHECKERS = {
+    "idle_agent_has_no_worktree",      # idle → worktree = None
+    "working_agent_has_worktree",       # working/ready/done → worktree exists
+    "no_duplicate_task_assignments",    # Each task → at most one agent
+    "session_id_valid",                 # Non-idle agents have session ID
+    "worktree_exists_if_assigned",      # Worktree path exists on disk
+    "branch_exists_if_working",         # Agent's branch exists in git
+    "ticket_closed_only_if_work_in_main", # Ticket closed → work merged
+    "state_file_valid",                 # state.json is valid JSON
+}
+```
+
+### Fault Injection Scenarios
+
+**Assignment interrupts:**
+- Interrupt after worktree creation, before state save
+- Orphaned worktree cleanup on retry
+- State file never corrupted mid-write
+
+**Completion interrupts:**
+- Interrupt after worktree removal, before merge
+- Interrupt after merge, before ticket close
+- Ticket never closed before merge succeeds
+
+**Step interrupts:**
+- Timeout preserves agent state
+- Session conflict triggers auto-recovery
+- Resume after interrupt continues progress
+
+**Property-based testing:**
+```python
+@given(st.lists(st.sampled_from(["spawn", "assign", "step", "complete"])))
+def test_random_operations_maintain_invariants(operations):
+    """Any sequence of valid operations maintains all invariants."""
+```
+
+### Running the Tests
+
+```bash
+# All tests (452 total)
+pytest tests/ -v
+
+# Just fault injection tests (53 tests)
+pytest tests/fault_injection/ -v
+
+# With coverage
+pytest tests/ --cov=crew --cov-report=html
+```
+
+---
+
 ## Key Design Principles
 
 1. **State-Driven**: Everything is persisted to `state.json`, enabling recovery from any interruption
@@ -570,3 +682,5 @@ recover_session() runs at CLI startup:
 7. **Graceful Degradation**: Stuck agents don't block others; partial work is preserved
 
 8. **Observable**: Dashboard, events, and summaries provide visibility into agent progress
+
+9. **Invariant-Tested**: Fault injection tests verify state machine correctness under all conditions
