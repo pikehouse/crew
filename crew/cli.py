@@ -67,6 +67,9 @@ class BackgroundRunner:
         self._merge_lock = threading.Lock()
         # Store executor reference for clean shutdown
         self._executor = None
+        # Error tracking for backoff
+        self._error_counts: dict[str, int] = {}  # agent_name -> consecutive error count
+        self._error_backoff_until: dict[str, float] = {}  # agent_name -> time.time() to retry
 
     def start(self):
         """Start the background runner."""
@@ -75,6 +78,8 @@ class BackgroundRunner:
         self.running = True
         self._stepping = set()
         self._recently_completed = set()  # Clear on start to allow re-opened tasks
+        self._error_counts = {}  # Clear error tracking on fresh start
+        self._error_backoff_until = {}
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
         return True
@@ -102,9 +107,21 @@ class BackgroundRunner:
 
     def _get_working_agents(self) -> list:
         """Get agents that are ready or working and not currently being stepped."""
+        import time
+        now = time.time()
         with self._lock:
-            return [a for a in self.state.agents.values()
-                    if a.status in ("ready", "working") and a.name not in self._stepping]
+            agents = []
+            for a in self.state.agents.values():
+                if a.status not in ("ready", "working"):
+                    continue
+                if a.name in self._stepping:
+                    continue
+                # Skip agents in error backoff
+                backoff_until = self._error_backoff_until.get(a.name, 0)
+                if now < backoff_until:
+                    continue
+                agents.append(a)
+            return agents
 
     def _get_assigned_tasks(self) -> set:
         """Get set of task IDs already assigned to agents."""
@@ -164,6 +181,11 @@ class BackgroundRunner:
             preview = output[:60].replace('\n', ' ') if output else ""
             self.events.put(RunnerEvent("step", agent.name, preview))
 
+            # Reset error count on successful step
+            with self._lock:
+                self._error_counts[agent.name] = 0
+                self._error_backoff_until.pop(agent.name, None)
+
             # Loop while agent keeps saying DONE (for test failure retries)
             while agent.is_done:
                 task_id = agent.task
@@ -195,14 +217,29 @@ class BackgroundRunner:
                     break  # Don't loop forever on persistent errors
 
         except Exception as e:
+            import time
             error_msg = str(e)
             self.events.put(RunnerEvent("error", agent.name, error_msg))
+
+            # Track consecutive errors for backoff
+            with self._lock:
+                self._error_counts[agent.name] = self._error_counts.get(agent.name, 0) + 1
+                error_count = self._error_counts[agent.name]
+
+                # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s max
+                backoff_secs = min(60, 2 ** error_count)
+                self._error_backoff_until[agent.name] = time.time() + backoff_secs
+
+                # Mark as stuck after 5 consecutive errors
+                if error_count >= 5:
+                    agent.status = "stuck"
+                    save_state(self.state, self.project_root)
+                    self.events.put(RunnerEvent("error", agent.name, f"Marked as stuck after {error_count} consecutive errors"))
 
             # Regenerate session ID on timeout or session errors
             # This prevents "Session ID already in use" errors on retry
             if "timeout" in error_msg.lower() or "session" in error_msg.lower():
                 from crew.runner import generate_session_id
-                from crew.state import save_state
                 agent.session = generate_session_id()
                 save_state(self.state, self.project_root)
         finally:
