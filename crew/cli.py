@@ -1847,11 +1847,38 @@ def cmd_tickets(state, args: list[str], project_root: Path) -> None:
         console.print()
 
     # Section 2: Recently closed tickets with merge info
-    # Parse git log for recent merge commits
+    # Parse git log for recent merge commits (with timestamps)
     limit = 10  # Show last 10 merged tickets
+
+    # Helper to format relative time in abbreviated form
+    def format_ago(timestamp_str: str) -> str:
+        from datetime import datetime, timezone
+        try:
+            # Parse ISO format timestamp from git
+            dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            delta = now - dt
+            seconds = int(delta.total_seconds())
+            if seconds < 60:
+                return f"{seconds}s"
+            minutes = seconds // 60
+            if minutes < 60:
+                return f"{minutes}m"
+            hours = minutes // 60
+            if hours < 24:
+                return f"{hours}h"
+            days = hours // 24
+            if days < 7:
+                return f"{days}d"
+            weeks = days // 7
+            return f"{weeks}w"
+        except Exception:
+            return "?"
+
     try:
+        # Get commits with timestamps
         git_result = subprocess.run(
-            ["git", "log", "--oneline", "-50"],
+            ["git", "log", "--format=%h %aI %s", "-50"],
             capture_output=True,
             text=True,
             cwd=project_root,
@@ -1864,22 +1891,24 @@ def cmd_tickets(state, args: list[str], project_root: Path) -> None:
         return
 
     # Find merge commits with ticket IDs
-    # Pattern: "ca5c243 Merge agent/d-c-c04b (c-c04b) - ticket details on Enter"
-    merge_pattern = re.compile(r"^([a-f0-9]+) Merge agent/([^\s]+) \(([^)]+)\)(.*)$")
+    # Format: "ca5c243 2026-01-20T12:34:56-08:00 Merge agent/d-c-c04b (c-c04b) - details"
+    merge_pattern = re.compile(r"^([a-f0-9]+) ([^ ]+) Merge agent/([^\s]+) \(([^)]+)\)(.*)$")
     recent_merges = []
 
     for line in git_result.stdout.strip().split("\n"):
         match = merge_pattern.match(line)
         if match:
             commit_hash = match.group(1)
-            branch = match.group(2)
-            ticket_id = match.group(3)
-            extra = match.group(4).strip()
+            timestamp = match.group(2)
+            branch = match.group(3)
+            ticket_id = match.group(4)
+            extra = match.group(5).strip()
             # Remove leading dash if present
             if extra.startswith("- "):
                 extra = extra[2:]
             recent_merges.append({
                 "commit": commit_hash,
+                "timestamp": timestamp,
                 "branch": f"agent/{branch}",
                 "ticket": ticket_id,
                 "extra": extra,
@@ -1890,10 +1919,9 @@ def cmd_tickets(state, args: list[str], project_root: Path) -> None:
     if recent_merges:
         console.print("[bold blue]Recently Closed[/bold blue]")
         table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+        table.add_column("Ago", style="dim", width=4)
         table.add_column("Ticket", style="cyan")
         table.add_column("Title")
-        table.add_column("Commit", style="dim")
-        table.add_column("Branch", style="dim")
 
         for merge in recent_merges:
             title = get_ticket_title(merge["ticket"])
@@ -1905,10 +1933,9 @@ def cmd_tickets(state, args: list[str], project_root: Path) -> None:
             else:
                 display_title = title
             table.add_row(
+                format_ago(merge["timestamp"]),
                 merge["ticket"],
                 display_title,
-                merge["commit"],
-                merge["branch"],
             )
         console.print(table)
     else:
